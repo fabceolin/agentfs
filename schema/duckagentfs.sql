@@ -15,6 +15,12 @@
 -- PART 1: CORE FILESYSTEM (Append-Only Journal Model)
 -- ============================================================================
 
+-- Sequence for event IDs (must be created before fs_journal)
+CREATE SEQUENCE IF NOT EXISTS fs_event_seq START 1;
+
+-- Sequence for inode allocation
+CREATE SEQUENCE IF NOT EXISTS fs_inode_seq START 2;  -- 1 is reserved for root
+
 -- Journal of all filesystem events (append-only)
 CREATE TABLE IF NOT EXISTS fs_journal (
     event_id    UBIGINT PRIMARY KEY DEFAULT nextval('fs_event_seq'),
@@ -45,12 +51,6 @@ CREATE TABLE IF NOT EXISTS fs_journal (
     -- Metadata
     metadata    JSON
 );
-
--- Sequence for event IDs
-CREATE SEQUENCE IF NOT EXISTS fs_event_seq START 1;
-
--- Sequence for inode allocation
-CREATE SEQUENCE IF NOT EXISTS fs_inode_seq START 2;  -- 1 is reserved for root
 
 -- Current filesystem state view (derived from journal)
 CREATE OR REPLACE VIEW fs_current AS
@@ -368,6 +368,9 @@ CREATE TABLE IF NOT EXISTS fs_remote_refs (
 -- PART 7: SESSION AND AUDIT
 -- ============================================================================
 
+-- Sequence for audit log (must be created before audit_log table)
+CREATE SEQUENCE IF NOT EXISTS audit_seq START 1;
+
 -- Active sessions
 CREATE TABLE IF NOT EXISTS sessions (
     id              VARCHAR PRIMARY KEY,
@@ -391,8 +394,6 @@ CREATE TABLE IF NOT EXISTS audit_log (
     new_value       JSON,
     metadata        JSON
 );
-
-CREATE SEQUENCE IF NOT EXISTS audit_seq START 1;
 
 -- ============================================================================
 -- PART 8: UTILITY FUNCTIONS AND VIEWS
