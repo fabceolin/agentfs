@@ -1,0 +1,63 @@
+# Test Design Gate Block for STORY-5.2 HandlerRegistry
+# Generated: 2026-01-14
+# Designer: Quinn (Test Architect)
+
+test_design:
+  story_id: "5.2"
+  story_title: "HandlerRegistry"
+  design_date: "2026-01-14"
+
+  scenarios_total: 24
+
+  by_level:
+    unit: 10
+    integration: 10
+    e2e: 4
+
+  by_priority:
+    p0: 8
+    p1: 10
+    p2: 6
+    p3: 0
+
+  coverage_gaps: []
+
+  acceptance_criteria_coverage:
+    ac1_registration:
+      covered: true
+      tests: ["5.2-UNIT-001", "5.2-UNIT-002", "5.2-UNIT-003", "5.2-UNIT-004", "5.2-UNIT-005", "5.2-INT-001"]
+    ac2_priority_sorting:
+      covered: true
+      tests: ["5.2-UNIT-006", "5.2-UNIT-007", "5.2-UNIT-008", "5.2-UNIT-009"]
+    ac3_fallback:
+      covered: true
+      tests: ["5.2-INT-002", "5.2-INT-003", "5.2-INT-004", "5.2-UNIT-010"]
+    ac4_fuse_dispatch:
+      covered: true
+      tests: ["5.2-INT-005", "5.2-INT-006", "5.2-INT-007", "5.2-INT-008", "5.2-INT-009", "5.2-INT-010", "5.2-E2E-001", "5.2-E2E-002", "5.2-E2E-003", "5.2-E2E-004"]
+
+  risk_mitigation:
+    - risk: "Wrong handler serves request"
+      mitigated_by: ["5.2-UNIT-006", "5.2-UNIT-007", "5.2-INT-005"]
+    - risk: "Default handler never reached"
+      mitigated_by: ["5.2-INT-002", "5.2-INT-003", "5.2-INT-004"]
+    - risk: "Priority inversion"
+      mitigated_by: ["5.2-UNIT-006", "5.2-UNIT-008"]
+    - risk: "Data corruption on write"
+      mitigated_by: ["5.2-INT-006", "5.2-E2E-002"]
+
+  level_distribution_rationale: |
+    Heavy unit coverage (42%) for pure registration/sorting logic.
+    Equal integration coverage (42%) for async dispatch validation.
+    Focused E2E coverage (16%) for critical FUSE operations only.
+    Shift-left applied: business logic tested at unit level.
+
+  existing_tests_alignment:
+    - story_test: "Test 1: Handler Registration Order"
+      maps_to: ["5.2-UNIT-006", "5.2-UNIT-007"]
+    - story_test: "Test 2: Handler Fallthrough"
+      maps_to: ["5.2-INT-003"]
+    - story_test: "Test 3: Handler Intercept"
+      maps_to: ["5.2-INT-005"]
+
+  recommendation: "APPROVED - Comprehensive coverage with appropriate level distribution"

@@ -9,7 +9,7 @@
 | **ID** | STORY-4.2 |
 | **Epic** | EPIC-GRAPHDOCS-001 |
 | **Phase** | 4 - FUSE Handler |
-| **Status** | Todo |
+| **Status** | Ready for Development |
 | **Priority** | Medium |
 | **File** | `cli/src/handler.rs` |
 | **Dependencies** | STORY-4.1 |

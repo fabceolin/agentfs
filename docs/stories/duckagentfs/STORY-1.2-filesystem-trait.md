@@ -9,7 +9,8 @@
 | **ID** | STORY-1.2 |
 | **Epic** | EPIC-DUCKAGENTFS-001 |
 | **Phase** | 1 - Core Storage Engine |
-| **Status** | In Progress |
+| **Status** | Needs Revision |
+| **Status Notes** | QA validation failed: All filesystem operations return placeholder values; no integration tests exist; DuckDB SQL implementation not complete. Story split into sub-stories 1.2.1-1.2.4 per SCP-2026-01-14. Complete sub-stories before parent story can proceed. |
 | **Priority** | Critical |
 | **File** | `sdk/rust/src/filesystem/duckagentfs.rs` |
 | **Dependencies** | STORY-1.1 |
@@ -26,11 +27,13 @@ Implement all methods of the `FileSystem` trait defined in `sdk/rust/src/filesys
 
 ## Acceptance Criteria
 
-- [x] Implement all methods of the `FileSystem` trait
-- [x] Use journal model for all mutations
-- [x] Maintain DentryCache for performance
-- [x] Support symlinks and hardlinks
-- [ ] Unit and integration tests
+- [ ] Integrate DuckDB Rust crate (`duckdb >= 1.1`) — see STORY-1.2.1
+- [ ] Implement all methods of the `FileSystem` trait with actual DB queries — see STORY-1.2.2
+- [ ] Use journal model for all mutations (verified via tests)
+- [ ] Maintain DentryCache for performance (unit tested) — see STORY-1.2.4
+- [ ] Support symlinks and hardlinks (integration tested) — see STORY-1.2.3
+- [ ] Unit tests for DentryCache (6+ test cases)
+- [ ] Integration tests for P0/P1 scenarios per test design doc
 
 ## Methods to Implement
 
@@ -275,3 +278,154 @@ async fn test_rename() {
 3. **Chunk Size**: Use 4KB chunks for file data, similar to AgentFS
 
 4. **Embedding Integration**: Call `update_embedding()` after `write_file()` if VSS is enabled
+
+## QA Notes
+
+**Review Date:** 2026-01-14
+**Updated:** 2026-01-14
+**Reviewer:** Quinn (QA Agent)
+**Story Status:** Needs Revision (Split into sub-stories)
+**Test Design Doc:** [STORY-1.2-filesystem-trait-test-design.md](../../qa/STORY-1.2-filesystem-trait-test-design.md)
+
+### Test Coverage Summary
+
+| Category | Coverage | Status | Sub-Story |
+|----------|----------|--------|-----------|
+| Infrastructure (DuckDB Integration) | Not implemented | ❌ Blocked | 1.2.1 |
+| Unit Tests (Path Utilities) | 2 tests present | ⚠️ Minimal | - |
+| DentryCache Unit Tests | Logic implemented | ❌ Not Tested | 1.2.4 |
+| Core CRUD Operations | Placeholders only | ❌ Not Tested | 1.2.2 |
+| Path Resolution | Placeholders only | ❌ Not Tested | 1.2.3 |
+| Symlink/Hardlink | Placeholders only | ❌ Not Tested | 1.2.3 |
+| Time-Travel (Snapshots) | Placeholders only | ❌ Future | - |
+| VSS Integration | Placeholders only | ❌ Future | - |
+
+**Current State:** The implementation file (`duckagentfs.rs`) contains a well-structured conceptual implementation with placeholder/stub methods. Only 2 unit tests exist (`test_normalize_path`, `test_split_path`) covering path utility functions. The 5 integration test scenarios defined in the story (Basic CRUD, Directories, Symlinks, Hardlinks, Rename) are documented but **not implemented as actual test code**.
+
+### Risk Areas Identified
+
+| Risk | Severity | Probability | Impact | Mitigation | Sub-Story |
+|------|----------|-------------|--------|------------|-----------|
+| **Placeholder Methods** | HIGH | 100% | All operations return empty/default values | Complete DuckDB integration before testing | 1.2.1, 1.2.2 |
+| **No DuckDB Integration** | HIGH | 100% | Cannot validate actual filesystem behavior | Implement actual SQL queries with duckdb crate | 1.2.1 |
+| **DentryCache Concurrency** | MEDIUM | 40% | Mutex contention under load | Benchmark with concurrent operations | 1.2.4 |
+| **Symlink Loop Detection** | MEDIUM | 30% | MAX_SYMLINK_DEPTH=40 may be excessive | Unit test boundary conditions | 1.2.3 |
+| **Journal Event Integrity** | HIGH | 60% | Data loss if journal append fails mid-operation | Add transaction boundaries, test rollback | 1.2.2 |
+| **Connection Pool Semantics** | MEDIUM | 50% | Write semaphore not actually implemented | Test single-writer guarantee under concurrency | 1.2.1 |
+| **Snapshot Read Consistency** | MEDIUM | 40% | Snapshot delegates to current fs methods | Implement event_id filtering in queries | Future |
+
+### Recommended Test Scenarios
+
+Test scenarios mapped to sub-stories per test design document:
+
+#### P0 - Critical (Must Have Before Release)
+
+| Test ID | Scenario | Sub-Story |
+|---------|----------|-----------|
+| TC-INFRA-001 | DuckDB Connection and Schema Initialization | 1.2.1 |
+| TC-P0-001 | Basic CRUD E2E | 1.2.2 |
+| TC-P0-002 | Journal Append Atomicity | 1.2.2 |
+| TC-P0-003 | Path Resolution with DentryCache | 1.2.3 |
+| TC-P0-004 | Symlink Resolution Limits | 1.2.3 |
+| TC-P0-005 | Root Directory Protection | 1.2.2 |
+
+#### P1 - High (Required for Production)
+
+| Test ID | Scenario | Sub-Story |
+|---------|----------|-----------|
+| TC-P1-001 | Concurrent Write Serialization | 1.2.2 |
+| TC-P1-002 | Hardlink nlink Tracking | 1.2.3 |
+| TC-P1-003 | Rename Across Directories | 1.2.3 |
+| TC-P1-004 | DentryCache Invalidation on Rename | 1.2.3, 1.2.4 |
+| TC-P1-005 | Directory Non-Empty Check | 1.2.2 |
+| TC-P1-006 | Symlink Target Storage and Retrieval | 1.2.3 |
+
+#### P2 - Medium (Quality Enhancement)
+
+| Test ID | Scenario | Sub-Story |
+|---------|----------|-----------|
+| TC-P2-001 | Time-Travel Snapshot Isolation | Future |
+| TC-P2-002 | VSS Embedding Update on Write | Future |
+| TC-P2-003 | Large File Chunking | 1.2.2 |
+| TC-P2-004 | mkdir_recursive Idempotence | 1.2.2 |
+| TC-P2-005 | Snapshot Read-Only Enforcement | Future |
+
+### Concerns and Blockers
+
+| Type | Description | Severity | Action Required |
+|------|-------------|----------|-----------------|
+| **BLOCKER** | All filesystem operations return placeholder values | Critical | Complete DuckDB SQL implementation (1.2.1, 1.2.2) |
+| **BLOCKER** | No integration tests exist | Critical | Implement test suite before marking story complete |
+| **BLOCKER** | `DuckConnectionPool` is placeholder | Critical | Integrate `duckdb` crate (1.2.1) |
+| **BLOCKER** | `lookup_child` always returns None | Critical | Implement actual SQL query (1.2.2) |
+| **BLOCKER** | `stat_inode` always returns None | Critical | Implement fs_current query (1.2.2) |
+| **BLOCKER** | `write_data_chunks` is no-op | Critical | Implement chunk storage (1.2.2) |
+| **BLOCKER** | `read_symlink_target` returns None | High | Implement fs_data query (1.2.3) |
+| **CONCERN** | Snapshot `read_file` delegates to current fs (no event_id filtering) | Medium | Implement proper time-travel in snapshot methods |
+| **CONCERN** | `write_data_chunks` deletes before insert (not atomic) | Medium | Wrap in transaction |
+| **NOTE** | Schema file `schema/duckagentfs.sql` referenced but not verified | Low | Confirm schema compatibility |
+
+### Test Infrastructure Requirements
+
+- [ ] DuckDB test fixture with in-memory database
+- [ ] Mock `EmbeddingGenerator` for VSS tests
+- [ ] Concurrent operation test harness (tokio test runtime)
+- [ ] Journal event verification helper functions
+- [ ] Snapshot comparison utilities
+
+### Test Execution Gating
+
+| Gate | Milestone | Sub-Stories Required | Status |
+|------|-----------|---------------------|--------|
+| Gate 1 | Pre-Alpha | 1.2.1 + 1.2.4 | ❌ Not Started |
+| Gate 2 | Alpha | 1.2.2 complete | ❌ Blocked |
+| Gate 3 | Beta | 1.2.3 complete | ❌ Blocked |
+| Gate 4 | Release Candidate | All P0+P1+P2 | ❌ Blocked |
+
+### Recommendation
+
+**Gate Status:** 🚫 **BLOCKED** - Story cannot proceed until sub-stories completed:
+1. ✅ Story split into sub-stories (SCP-2026-01-14)
+2. ⏳ STORY-1.2.1: DuckDB Rust Crate Integration (Ready for Development)
+3. ⏳ STORY-1.2.4: DentryCache Unit Tests (Ready for Development - parallel track)
+4. ⏳ STORY-1.2.2: Core CRUD Implementation (Blocked by 1.2.1)
+5. ⏳ STORY-1.2.3: Links and Path Resolution (Blocked by 1.2.2)
+
+---
+
+## Remediation Plan (SCP-2026-01-14)
+
+This story has been split into focused sub-stories to address the identified blockers:
+
+| Sub-Story | Description | Status | Blocks |
+|-----------|-------------|--------|--------|
+| [STORY-1.2.1](STORY-1.2.1-duckdb-integration.md) | DuckDB Rust Crate Integration | Ready for Development | 1.2.2, 1.2.3 |
+| [STORY-1.2.2](STORY-1.2.2-core-crud.md) | Core CRUD Implementation | Blocked by 1.2.1 | 1.2.3 |
+| [STORY-1.2.3](STORY-1.2.3-links-paths.md) | Links and Path Resolution | Blocked by 1.2.2 | - |
+| [STORY-1.2.4](STORY-1.2.4-dentry-tests.md) | DentryCache Unit Tests | Ready for Development | - |
+
+### Execution Order
+
+```
+STORY-1.2.1 ──────────────────────────► STORY-1.2.2 ──► STORY-1.2.3
+    │                                        │
+    └─ STORY-1.2.4 (parallel) ◄──────────────┘
+```
+
+### Completion Criteria
+
+STORY-1.2 will be marked **Complete** when:
+1. All four sub-stories pass their acceptance criteria
+2. QA gates from `docs/qa/STORY-1.2-filesystem-trait-test-design.md` are satisfied:
+   - Gate 1 (Pre-Alpha): All P0 tests passing
+   - Gate 2 (Alpha): All P0 + P1 tests passing
+
+### Reference Documents
+
+- [Test Design Document](../../qa/STORY-1.2-filesystem-trait-test-design.md)
+- [DuckDB Rust Client Documentation](https://duckdb.org/docs/stable/clients/rust)
+
+### Created By
+
+Sprint Change Proposal SCP-2026-01-14-STORY-1.2
+Date: 2026-01-14

@@ -9,7 +9,7 @@
 | **ID** | STORY-3.3 |
 | **Epic** | EPIC-GRAPHDOCS-001 |
 | **Phase** | 3 - Rendering Engine |
-| **Status** | Todo |
+| **Status** | Ready for Development |
 | **Priority** | Medium |
 | **File** | `sdk/rust/src/graphdocs/engine.rs` |
 | **Dependencies** | STORY-3.1, EPIC-DUCKAGENTFS-001 (STORY-1.4) |

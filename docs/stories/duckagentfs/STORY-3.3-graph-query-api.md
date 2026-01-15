@@ -9,7 +9,7 @@
 | **ID** | STORY-3.3 |
 | **Epic** | EPIC-DUCKAGENTFS-001 |
 | **Phase** | 3 - Property Graphs (DuckPGQ) |
-| **Status** | Todo |
+| **Status** | Ready for Development |
 | **Priority** | Medium |
 | **File** | `sdk/rust/src/code_graph.rs` (new) |
 | **Dependencies** | STORY-3.1, STORY-3.2 |

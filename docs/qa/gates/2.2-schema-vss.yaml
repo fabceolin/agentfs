@@ -1,0 +1,158 @@
+# QA Gate: STORY-2.2 Schema VSS
+# Generated: 2026-01-14
+
+story:
+  id: "STORY-2.2"
+  title: "Schema VSS"
+  epic: "EPIC-DUCKAGENTFS-001"
+  phase: 2
+  status: "Done"
+
+test_design:
+  document: "docs/qa/assessments/2.2-test-design-comprehensive-20260114.md"
+  revision: "v2-comprehensive"
+  date: "2026-01-14"
+  designer: "Quinn"
+
+  scenarios:
+    total: 30
+    by_level:
+      unit: 6
+      integration: 18
+      e2e: 6
+    by_priority:
+      p0: 12
+      p1: 12
+      p2: 6
+
+  acceptance_criteria_coverage:
+    ac1_fs_embeddings_table:
+      covered: true
+      test_count: 6
+      test_ids:
+        - "2.2-INT-001"
+        - "2.2-INT-002"
+        - "2.2-UNIT-001"
+        - "2.2-INT-003"
+        - "2.2-INT-020"
+        - "2.2-INT-021"
+    ac2_fs_chunk_embeddings_table:
+      covered: true
+      test_count: 7
+      test_ids:
+        - "2.2-INT-004"
+        - "2.2-INT-005"
+        - "2.2-INT-006"
+        - "2.2-INT-007"
+        - "2.2-INT-022"
+        - "2.2-INT-023"
+        - "2.2-INT-024"
+    ac3_hnsw_index:
+      covered: true
+      test_count: 4
+      test_ids:
+        - "2.2-UNIT-002"
+        - "2.2-INT-008"
+        - "2.2-E2E-001"
+        - "2.2-INT-025"
+    ac4_model_tracking:
+      covered: true
+      test_count: 3
+      test_ids:
+        - "2.2-INT-009"
+        - "2.2-UNIT-003"
+        - "2.2-INT-010"
+    ac5_content_hash:
+      covered: true
+      test_count: 4
+      test_ids:
+        - "2.2-INT-011"
+        - "2.2-UNIT-004"
+        - "2.2-E2E-002"
+        - "2.2-INT-026"
+
+  cross_cutting_coverage:
+    similarity_functions:
+      covered: true
+      test_count: 5
+      test_ids:
+        - "2.2-E2E-003"  # Cosine
+        - "2.2-E2E-004"  # Euclidean
+        - "2.2-E2E-005"  # Inner product
+        - "2.2-UNIT-005" # Identical vectors
+        - "2.2-UNIT-006" # Orthogonal vectors
+    fs_tree_integration:
+      covered: true
+      test_count: 4
+      test_ids:
+        - "2.2-INT-027"  # JOIN with paths
+        - "2.2-INT-028"  # Mode bitmask filter
+        - "2.2-INT-029"  # LEFT JOIN null handling
+        - "2.2-INT-030"  # Orphan detection
+
+  risk_mitigation:
+    dimension_mismatch:
+      risk_level: "medium"
+      tests: ["2.2-UNIT-001", "2.2-INT-002", "2.2-INT-020"]
+    stale_embeddings:
+      risk_level: "high"
+      tests: ["2.2-INT-011", "2.2-E2E-002", "2.2-INT-026"]
+    vss_extension_unavailable:
+      risk_level: "medium"
+      tests: ["2.2-INT-008", "2.2-E2E-001", "2.2-INT-025"]
+    chunk_corruption:
+      risk_level: "medium"
+      tests: ["2.2-INT-005", "2.2-INT-006", "2.2-INT-024"]
+    orphan_embeddings:
+      risk_level: "medium"
+      tests: ["2.2-INT-030"]
+    incorrect_similarity_ranking:
+      risk_level: "high"
+      tests: ["2.2-E2E-003", "2.2-E2E-004", "2.2-E2E-005"]
+
+gate_status:
+  test_design_complete: true
+  all_acs_covered: true
+  story_qa_notes_addressed: true
+  ready_for_implementation: true
+
+verification:
+  checklist:
+    - item: "Every AC has test coverage"
+      status: "pass"
+    - item: "Test levels appropriate"
+      status: "pass"
+    - item: "No duplicate coverage"
+      status: "pass"
+    - item: "Priorities align with risk"
+      status: "pass"
+    - item: "Test IDs follow naming convention"
+      status: "pass"
+    - item: "Scenarios are atomic"
+      status: "pass"
+    - item: "Similarity search tested"
+      status: "pass"
+    - item: "Change detection validated"
+      status: "pass"
+    - item: "Chunking model tested"
+      status: "pass"
+    - item: "All similarity metrics tested"
+      status: "pass"
+    - item: "VSS fallback tested"
+      status: "pass"
+    - item: "fs_tree integration validated"
+      status: "pass"
+    - item: "Edge cases covered"
+      status: "pass"
+
+enhancements_from_original:
+  scenarios_added: 12
+  categories:
+    - "dimension_mismatch_handling"
+    - "null_embedding_edge_case"
+    - "chunk_overlap_boundary"
+    - "euclidean_inner_product_metrics"
+    - "idempotency_verification"
+    - "fs_tree_join_tests"
+    - "orphan_embedding_detection"
+    - "vss_fallback_path"

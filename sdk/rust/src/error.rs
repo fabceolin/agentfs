@@ -5,9 +5,17 @@ use thiserror::Error;
 /// The main error type for the AgentFS SDK.
 #[derive(Debug, Error)]
 pub enum Error {
-    /// Database error from turso
+    /// Database error from turso (SQLite)
     #[error("database error: {0}")]
     Database(#[from] turso::Error),
+
+    /// Database error from DuckDB
+    #[error("duckdb error: {0}")]
+    DuckDB(#[from] duckdb::Error),
+
+    /// Custom error with a message
+    #[error("{0}")]
+    Custom(String),
 
     /// IO error
     #[error("io error: {0}")]

@@ -9,7 +9,7 @@
 | **ID** | STORY-5.1 |
 | **Epic** | EPIC-GRAPHDOCS-001 |
 | **Phase** | 5 - CLI and Management |
-| **Status** | Todo |
+| **Status** | Ready for Development |
 | **Priority** | High |
 | **File** | `cli/src/cmd/graphdocs.rs` |
 | **Dependencies** | STORY-3.1, STORY-2.3 |

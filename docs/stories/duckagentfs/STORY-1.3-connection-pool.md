@@ -9,10 +9,18 @@
 | **ID** | STORY-1.3 |
 | **Epic** | EPIC-DUCKAGENTFS-001 |
 | **Phase** | 1 - Core Storage Engine |
-| **Status** | Todo |
+| **Status** | Ready for Implementation |
 | **Priority** | High |
 | **File** | `sdk/rust/src/duckdb_pool.rs` (new) |
 | **Dependencies** | STORY-1.1 |
+
+### Status Notes (2026-01-14)
+
+**Ready for Implementation** - Sprint Change Proposal approved:
+- Retry mechanism descoped to STORY-1.3.1 (backlog)
+- Added tests: timeout error (P1), RAII cleanup (P1), graceful shutdown (P1)
+- Added `close()` method for graceful shutdown
+- Updated `create_connection()` to use real DuckDB
 
 ## User Story
 
@@ -30,7 +38,8 @@ DuckDB uses single-writer semantics: only one connection can write at a time, bu
 - [ ] Pool of read connections (N permits)
 - [ ] Pool usage metrics
 - [ ] Configurable timeout
-- [ ] Automatic retry on busy
+- [ ] Graceful shutdown support (`close()` method)
+- [ ] Real DuckDB connection creation (not stubbed)
 
 ## Technical Specification
 
@@ -63,12 +72,6 @@ pub struct PoolConfig {
 
     /// Timeout for acquiring connection (ms)
     pub acquire_timeout_ms: u64,
-
-    /// Retry count on busy
-    pub retry_count: usize,
-
-    /// Retry delay (ms)
-    pub retry_delay_ms: u64,
 }
 
 impl Default for PoolConfig {
@@ -76,8 +79,6 @@ impl Default for PoolConfig {
         Self {
             max_readers: 10,
             acquire_timeout_ms: 5000,
-            retry_count: 3,
-            retry_delay_ms: 100,
         }
     }
 }
@@ -98,9 +99,6 @@ pub struct PoolMetrics {
     /// Total timeouts
     pub timeouts: AtomicU64,
 
-    /// Total retries
-    pub retries: AtomicU64,
-
     /// Current active readers
     pub active_readers: AtomicU64,
 
@@ -117,7 +115,6 @@ impl PoolMetrics {
             reads_acquired: AtomicU64::new(0),
             writes_acquired: AtomicU64::new(0),
             timeouts: AtomicU64::new(0),
-            retries: AtomicU64::new(0),
             active_readers: AtomicU64::new(0),
             active_writers: AtomicU64::new(0),
             total_wait_time_ms: AtomicU64::new(0),
@@ -129,7 +126,6 @@ impl PoolMetrics {
             reads_acquired: self.reads_acquired.load(Ordering::Relaxed),
             writes_acquired: self.writes_acquired.load(Ordering::Relaxed),
             timeouts: self.timeouts.load(Ordering::Relaxed),
-            retries: self.retries.load(Ordering::Relaxed),
             active_readers: self.active_readers.load(Ordering::Relaxed),
             active_writers: self.active_writers.load(Ordering::Relaxed),
             total_wait_time_ms: self.total_wait_time_ms.load(Ordering::Relaxed),
@@ -212,15 +208,30 @@ impl DuckConnectionPool {
         })
     }
 
-    fn create_connection(&self) -> Result<DuckConnection> {
-        // NOTE: Use actual DuckDB connection creation
-        // duckdb::Connection::open(&self.path)
-        Ok(DuckConnection { path: self.path.clone() })
+    fn create_connection(&self) -> Result<duckdb::Connection> {
+        duckdb::Connection::open(&self.path)
+            .map_err(|e| Error::Database(e.to_string()))
     }
 
     /// Get current metrics
     pub fn metrics(&self) -> MetricsSnapshot {
         self.metrics.snapshot()
+    }
+
+    /// Gracefully close the pool, waiting for active connections
+    pub async fn close(&self) -> Result<()> {
+        // Close semaphores to prevent new acquisitions
+        self.write_semaphore.close();
+        self.read_semaphore.close();
+
+        // Wait for all active connections to be released
+        // by attempting to acquire all permits (blocks until released)
+        let _ = self.write_semaphore.acquire().await;
+        for _ in 0..self.config.max_readers {
+            let _ = self.read_semaphore.acquire().await;
+        }
+
+        Ok(())
     }
 }
 ```
@@ -236,7 +247,7 @@ enum ConnectionPermit {
 }
 
 pub struct PooledConnection {
-    conn: DuckConnection,
+    conn: duckdb::Connection,
     _permit: ConnectionPermit,
     metrics: Arc<PoolMetrics>,
 }
@@ -255,7 +266,7 @@ impl Drop for PooledConnection {
 }
 
 impl std::ops::Deref for PooledConnection {
-    type Target = DuckConnection;
+    type Target = duckdb::Connection;
 
     fn deref(&self) -> &Self::Target {
         &self.conn
@@ -338,6 +349,81 @@ async fn test_metrics() {
 }
 ```
 
+### Test 4: Timeout Returns Correct Error
+```rust
+#[tokio::test]
+async fn test_timeout_returns_error() {
+    let config = PoolConfig {
+        max_readers: 1,
+        acquire_timeout_ms: 50,
+    };
+    let pool = DuckConnectionPool::new(":memory:", config).await.unwrap();
+
+    // Exhaust the single reader slot
+    let _hold = pool.get_connection().await.unwrap();
+
+    // Next request should timeout and return specific error
+    let result = pool.get_connection().await;
+    assert!(matches!(result, Err(Error::ConnectionPoolTimeout)));
+
+    // Verify timeout metric incremented
+    let metrics = pool.metrics();
+    assert_eq!(metrics.timeouts, 1);
+}
+```
+
+### Test 5: RAII Cleanup Releases Permit
+```rust
+#[tokio::test]
+async fn test_raii_cleanup() {
+    let config = PoolConfig {
+        max_readers: 1,
+        acquire_timeout_ms: 100,
+    };
+    let pool = DuckConnectionPool::new(":memory:", config).await.unwrap();
+
+    {
+        let _conn = pool.get_connection().await.unwrap();
+        assert_eq!(pool.metrics().active_readers, 1);
+    }
+
+    // After drop, permit should be released
+    assert_eq!(pool.metrics().active_readers, 0);
+
+    // Should be able to acquire again immediately
+    let _conn2 = pool.get_connection().await.unwrap();
+    assert_eq!(pool.metrics().active_readers, 1);
+}
+```
+
+### Test 6: Graceful Shutdown
+```rust
+#[tokio::test]
+async fn test_graceful_shutdown() {
+    let pool = DuckConnectionPool::new(":memory:", PoolConfig::default()).await.unwrap();
+    let conn = pool.get_connection().await.unwrap();
+
+    // Start shutdown in background
+    let pool_clone = pool.clone();
+    let shutdown = tokio::spawn(async move {
+        pool_clone.close().await
+    });
+
+    // Shutdown should wait for active connection
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!shutdown.is_finished());
+
+    // Release connection
+    drop(conn);
+
+    // Now shutdown should complete
+    shutdown.await.unwrap().unwrap();
+
+    // New connections should fail with pool closed error
+    assert!(matches!(pool.get_connection().await, Err(Error::ConnectionPoolClosed)));
+}
+```
+
 ## Related Files
 
 | File | Description |
@@ -355,3 +441,57 @@ async fn test_metrics() {
 3. **In-Memory**: For tests, use `:memory:` as path
 
 4. **Graceful Shutdown**: Implement `close()` method that waits for active connections
+
+## QA Notes
+
+### Test Coverage Summary
+
+| Area | Coverage | Notes |
+|------|----------|-------|
+| Single-writer semantics | ✅ Covered | Test 1 validates exclusive write access |
+| Multiple readers | ✅ Covered | Test 2 validates concurrent read access |
+| Pool metrics | ✅ Covered | Test 3 validates metric tracking |
+| Timeout behavior | ✅ Covered | Test 4 validates timeout error and metric |
+| RAII cleanup | ✅ Covered | Test 5 validates permit release on drop |
+| Graceful shutdown | ✅ Covered | Test 6 validates close() behavior |
+| Retry on busy | N/A | Descoped to STORY-1.3.1 |
+| Connection creation errors | ⚠️ Future | Consider adding in implementation phase |
+
+### Risk Areas Identified
+
+1. **MEDIUM - Connection Lifetime**: No tests validate connection behavior under prolonged use or connection staleness. DuckDB connections may behave differently than SQLite under stress.
+
+2. **MEDIUM - Thread Safety**: Implementation note #1 questions DuckDB thread support but no tests validate cross-thread connection usage.
+
+3. **LOW - Metric Overflow**: `AtomicU64` counters could overflow under extreme load. Consider wrapping or resetting strategy.
+
+### Recommended Future Test Scenarios
+
+| Scenario | Priority | Given-When-Then |
+|----------|----------|-----------------|
+| Connection creation failure | P2 | **Given** invalid database path, **When** connection created, **Then** appropriate error returned |
+| Cross-thread connection use | P2 | **Given** connection from pool, **When** used on different thread, **Then** operations succeed |
+| Metrics under concurrent load | P2 | **Given** high concurrency, **When** metrics snapshotted, **Then** values are consistent |
+| Stress test | P3 | **Given** high concurrency, **When** many reads/writes, **Then** semaphores behave correctly |
+
+### Sprint Change Proposal Applied
+
+**Date**: 2026-01-14
+
+**Changes Made**:
+- Removed "Automatic retry on busy" from scope (deferred to STORY-1.3.1)
+- Removed `retry_count` and `retry_delay_ms` from PoolConfig
+- Removed `retries` from PoolMetrics
+- Added Test 4: Timeout Returns Correct Error
+- Added Test 5: RAII Cleanup Releases Permit
+- Added Test 6: Graceful Shutdown
+- Added `close()` method for graceful shutdown
+- Replaced stubbed `create_connection()` with real `duckdb::Connection::open()`
+
+### QA Gate Status
+
+**Status**: APPROVED
+
+**Rationale**: Core functionality is well-designed with comprehensive test coverage for all acceptance criteria. Retry mechanism appropriately descoped to separate story. All P0/P1 test scenarios now covered.
+
+**Reviewed**: 2026-01-14 | PO: Sarah | QA: Quinn (Test Architect)

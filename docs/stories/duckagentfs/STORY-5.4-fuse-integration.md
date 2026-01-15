@@ -9,7 +9,7 @@
 | **ID** | STORY-5.4 |
 | **Epic** | EPIC-DUCKAGENTFS-001 |
 | **Phase** | 5 - FUSE + Handler Registry |
-| **Status** | Todo |
+| **Status** | Ready for Development |
 | **Priority** | High |
 | **File** | `cli/src/fuse.rs` |
 | **Dependencies** | STORY-5.1, STORY-5.2, STORY-5.3 |

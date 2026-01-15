@@ -9,7 +9,8 @@
 | **ID** | STORY-1.4 |
 | **Epic** | EPIC-DUCKAGENTFS-001 |
 | **Phase** | 1 - Core Storage Engine |
-| **Status** | Partial |
+| **Status** | Ready for Development |
+| **Revision Notes** | Validated 2026-01-14: 4 of 6 acceptance criteria incomplete. Remaining: implement list_events() API, diff() API, unit tests for read-only enforcement (3+), integration tests for time-travel (5+). CLI scope moved to STORY-6.1 per SCP-2026-01-14. |
 | **Priority** | Medium |
 | **File** | `sdk/rust/src/filesystem/duckagentfs.rs` |
 | **Dependencies** | STORY-1.1, STORY-1.2 |
@@ -33,9 +34,12 @@ The append-only journal model allows reconstructing the filesystem state at any 
 
 - [x] Method `snapshot_at(event_id)` returns read-only filesystem
 - [x] View `fs_current` filters by event_id
-- [ ] CLI: `agentfs snapshot <id> --at <event_id>`
-- [ ] API to list events (timeline)
-- [ ] API to diff between two snapshots
+- [ ] API: `list_events(limit, offset)` returns paginated timeline
+- [ ] API: `diff(from_event, to_event)` returns Vec<FileDiff>
+- [ ] Unit tests for snapshot read-only enforcement (3+ tests)
+- [ ] Integration tests for time-travel scenarios (5+ tests)
+
+> **Note**: CLI commands (`agentfs snapshot`) moved to STORY-6.1 per SCP-2026-01-14
 
 ## Technical Specification
 
@@ -263,27 +267,6 @@ impl DuckAgentFS {
 }
 ```
 
-## CLI Commands
-
-### agentfs snapshot
-
-```bash
-# List available snapshots (event IDs)
-agentfs snapshot list my-agent
-
-# Read file at specific snapshot
-agentfs snapshot my-agent --at 100 cat /path/to/file
-
-# List directory at snapshot
-agentfs snapshot my-agent --at 100 ls /path
-
-# Diff between snapshots
-agentfs snapshot my-agent diff --from 50 --to 100
-
-# Mount snapshot as read-only filesystem
-agentfs snapshot my-agent --at 100 mount /mnt/snapshot
-```
-
 ## Tests
 
 ### Test 1: Snapshot Read
@@ -338,6 +321,10 @@ async fn test_snapshot_deleted() {
 async fn test_diff() {
     let fs = DuckAgentFS::open(config).await.unwrap();
 
+    // Setup: Create files to be modified and deleted
+    fs.write_file("/modified.txt", b"v1").await.unwrap();
+    fs.write_file("/deleted.txt", b"will be deleted").await.unwrap();
+
     let start = fs.current_event_id().await.unwrap();
 
     fs.write_file("/new.txt", b"new").await.unwrap();
@@ -360,7 +347,6 @@ async fn test_diff() {
 |------|-------------|
 | `sdk/rust/src/filesystem/duckagentfs.rs` | Snapshot implementation |
 | `schema/duckagentfs.sql` | fs_journal table |
-| `cli/src/cmd/snapshot.rs` | CLI commands (new) |
 
 ## Implementation Notes
 
@@ -374,3 +360,67 @@ async fn test_diff() {
    - Archiving to external storage
 
 3. **Concurrency**: Snapshots can be created while writes occur. Ensure consistency via event_id ordering.
+
+## QA Notes
+
+### Test Coverage Summary
+
+| Area | Coverage | Status |
+|------|----------|--------|
+| `snapshot_at()` API | 3 tests defined | ✅ Covered |
+| `current_event_id()` | Implicit in tests | ⚠️ Needs explicit test |
+| `list_events()` pagination | Not covered | ❌ Missing |
+| `diff()` API | 1 test defined | ⚠️ Partial |
+| Read-only enforcement | Not covered | ❌ Missing |
+| Error handling (invalid event_id) | Not covered | ❌ Missing |
+
+> **Note:** CLI commands coverage tracked in STORY-6.1
+
+### Risk Areas Identified
+
+1. **HIGH: SQL Injection in Historical Query** - The `query_current()` method uses string formatting with `self.event_id`. While event_id is i64 (not user-controlled string), the pattern is risky. Recommend parameterized queries.
+
+2. **HIGH: Performance Degradation** - Complex CTEs with window functions over large journals may cause timeouts. No pagination or limits in historical queries.
+
+3. **MEDIUM: Race Condition** - Between checking `event_id` exists and executing snapshot query, events could be compacted/archived. Need transactional consistency.
+
+4. **MEDIUM: Memory Exhaustion** - `list_events()` and `diff()` load all results into memory. Large result sets could OOM.
+
+5. **LOW: Edge Case - Event ID 0** - `current_event_id()` returns 0 for empty journal. `snapshot_at(0)` behavior undefined.
+
+### Recommended Test Scenarios
+
+**P0 - Must Have:**
+1. Snapshot at non-existent event_id returns appropriate error
+2. Read-only snapshot rejects write operations (write_file, mkdir, remove)
+3. `list_events()` pagination with limit=0 and large offset
+4. Diff between same event_id returns empty list
+5. Snapshot of renamed file returns correct path at that time
+
+**P1 - Should Have:**
+1. Performance test: snapshot query with 100K+ journal entries
+2. Concurrent snapshot reads during active writes
+3. Snapshot at event_id=0 (empty filesystem)
+4. `diff()` with invalid from_event > to_event
+5. Event timeline ordering consistency
+
+**P2 - Nice to Have:**
+1. CLI integration tests for `agentfs snapshot` commands
+2. Mount snapshot as FUSE filesystem (read-only verification)
+3. Recovery workflow: restore deleted file from snapshot
+
+### Concerns and Blockers
+
+| Type | Description | Severity |
+|------|-------------|----------|
+| **Technical Debt** | Historical query CTE duplicates event_id 3 times | Maintainability |
+
+> **Note:** CLI blocker removed - scope moved to STORY-6.1 per SCP-2026-01-14. Test 3 setup is correct (creates `/deleted.txt` before deletion).
+
+### Recommendations
+
+1. Add explicit test for `current_event_id()` on empty and populated journals
+2. Parameterize all SQL queries in `query_current()`
+3. Add `LIMIT` clause to diff query or implement streaming
+4. Define behavior for `snapshot_at(0)` - should it return empty FS or error?
+5. Fix Test 3 setup: create `/deleted.txt` before deleting it

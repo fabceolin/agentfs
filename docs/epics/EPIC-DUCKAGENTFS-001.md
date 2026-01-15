@@ -93,7 +93,11 @@ Implementar um backend de armazenamento para AgentFS usando DuckDB como banco de
 **Criterios de Aceitacao**:
 - [x] Metodo `snapshot_at(event_id)` retorna filesystem read-only
 - [x] View `fs_current` filtra por event_id
-- [ ] CLI: `agentfs snapshot <id> --at <event_id>`
+- [ ] API: `list_events(limit, offset)` para timeline
+- [ ] API: `diff(from_event, to_event)` para comparacao
+- [ ] Testes unitarios e de integracao
+
+**Nota**: CLI commands movidos para STORY-6.1 per SCP-2026-01-14
 
 **Arquivo**: `sdk/rust/src/filesystem/duckagentfs.rs` (struct `DuckAgentFSSnapshot`)
 

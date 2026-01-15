@@ -24,8 +24,7 @@ Icon[]
 Network Trash Folder
 Temporary Items
 .apdisk
-
 .agentfs
-# BMAD (local only)
-.bmad-core/
-.bmad-*/
+
+docs/stories/all-stories-parallel.dot
+docs/stories/all-stories-parallel.yaml

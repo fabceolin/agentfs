@@ -9,7 +9,7 @@
 | **ID** | STORY-2.1 |
 | **Epic** | EPIC-GRAPHDOCS-001 |
 | **Phase** | 2 - Parsing and Population |
-| **Status** | Todo |
+| **Status** | Ready for Development |
 | **Priority** | High |
 | **File** | `sdk/rust/src/graphdocs/parser.rs` |
 | **Dependencies** | STORY-1.1, STORY-1.2 |

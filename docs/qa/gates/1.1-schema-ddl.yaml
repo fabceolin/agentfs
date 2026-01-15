@@ -1,0 +1,124 @@
+# QA Gate: STORY-1.1 Schema DDL DuckDB
+# Generated: 2026-01-14
+# Designer: Quinn (Test Architect)
+
+story:
+  id: "STORY-1.1"
+  title: "Schema DDL DuckDB"
+  epic: "EPIC-DUCKAGENTFS-001"
+  priority: critical
+  status: "Ready for Development"
+
+test_design:
+  version: "2.0"
+  document: "docs/qa/assessments/1.1-test-design-20260114-v2.md"
+  date: "2026-01-14"
+
+metrics:
+  scenarios_total: 35
+  by_level:
+    unit: 8
+    integration: 19
+    e2e: 8
+  by_priority:
+    p0: 14
+    p1: 14
+    p2: 7
+
+acceptance_criteria_coverage:
+  ac1_fs_journal: 5
+  ac2_fs_current: 5
+  ac3_fs_data: 4
+  ac4_sequences: 3
+  ac5_kv_store: 2
+  ac6_tool_calls: 2
+  ac7_indexes: 2
+  ac8_root_dir: 2
+
+risk_coverage:
+  concurrent_operations:
+    tests: ["1.1-CONC-001", "1.1-CONC-002", "1.1-CONC-003"]
+    probability: medium
+    impact: high
+  delete_edge_cases:
+    tests: ["1.1-DEL-001", "1.1-DEL-002", "1.1-DEL-003", "1.1-DEL-004"]
+    probability: medium
+    impact: medium
+  performance_degradation:
+    tests: ["1.1-PERF-001", "1.1-PERF-002", "1.1-PERF-003"]
+    probability: high
+    impact: high
+  rename_integrity:
+    tests: ["1.1-REN-001", "1.1-REN-002", "1.1-REN-003"]
+    probability: medium
+    impact: medium
+  sequence_restart:
+    tests: ["1.1-SEQ-001", "1.1-SEQ-002"]
+    probability: low
+    impact: high
+  chunk_handling:
+    tests: ["1.1-CHUNK-001", "1.1-CHUNK-002", "1.1-CHUNK-003"]
+    probability: medium
+    impact: low
+  time_travel:
+    tests: ["1.1-TT-001", "1.1-TT-002", "1.1-TT-003"]
+    probability: medium
+    impact: medium
+
+p0_tests:
+  - id: "1.1-INT-001"
+    description: "Verify fs_journal table exists with all required columns"
+  - id: "1.1-INT-002"
+    description: "Append-only constraint validation"
+  - id: "1.1-UNIT-001"
+    description: "Validate event_type enum values"
+  - id: "1.1-INT-005"
+    description: "Create file and verify in fs_current"
+  - id: "1.1-INT-006"
+    description: "Update file and verify latest state"
+  - id: "1.1-INT-007"
+    description: "Delete file and verify exclusion"
+  - id: "1.1-UNIT-003"
+    description: "Checksum validation logic"
+  - id: "1.1-INT-009"
+    description: "fs_data table schema validation"
+  - id: "1.1-INT-012"
+    description: "fs_event_seq existence and behavior"
+  - id: "1.1-INT-013"
+    description: "fs_inode_seq uniqueness"
+  - id: "1.1-INT-018"
+    description: "Root directory initialized"
+  - id: "1.1-DEL-001"
+    description: "Multi-update then delete handling"
+  - id: "1.1-DEL-002"
+    description: "Name reuse after delete"
+  - id: "1.1-REN-001"
+    description: "Rename with audit trail"
+  - id: "1.1-CONC-001"
+    description: "100 concurrent file creates"
+  - id: "1.1-PERF-001"
+    description: "fs_current with 100K events < 500ms"
+
+performance_baselines:
+  fs_current_100k_events: "< 500ms"
+  directory_listing_100k_events: "< 100ms"
+  concurrent_creates_100_sessions: "no gaps or duplicates"
+
+gate_decision:
+  status: "APPROVED"
+  rationale: |
+    - All 8 acceptance criteria have test coverage
+    - QA-identified risks addressed with 21 additional scenarios
+    - Performance baselines established
+    - Concurrent operation tests included
+    - Delete edge cases comprehensively covered
+  conditions_for_production:
+    - "Execute P0 tests before merge"
+    - "Establish CI/CD pipeline for schema tests"
+    - "Performance regression monitoring required"
+
+trace:
+  story: "docs/stories/duckagentfs/STORY-1.1-schema-ddl.md"
+  test_design_v1: "docs/qa/assessments/1.1-test-design-20260114.md"
+  test_design_v2: "docs/qa/assessments/1.1-test-design-20260114-v2.md"
+  gate: "docs/qa/gates/1.1-schema-ddl.yaml"

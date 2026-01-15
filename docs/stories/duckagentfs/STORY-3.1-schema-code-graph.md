@@ -9,7 +9,7 @@
 | **ID** | STORY-3.1 |
 | **Epic** | EPIC-DUCKAGENTFS-001 |
 | **Phase** | 3 - Property Graphs (DuckPGQ) |
-| **Status** | Done |
+| **Status** | Ready for Development |
 | **Priority** | Medium |
 | **File** | `schema/duckagentfs.sql` |
 | **Dependencies** | STORY-1.1 |
@@ -302,3 +302,109 @@ SELECT COUNT(*) FROM code_dependencies WHERE source_id = 'test:a';
    - Batch inserts
    - Use prepared statements
    - Consider partitioning by language
+
+## QA Notes
+
+### Test Coverage Summary
+
+| Area | Coverage | Status |
+|------|----------|--------|
+| **Schema DDL** | 2 inline tests provided | ⚠️ Minimal |
+| **code_symbols table** | Insert/query test | ✅ Covered |
+| **code_dependencies table** | Basic insert test | ✅ Covered |
+| **Property Graph (DuckPGQ)** | No tests | ❌ Not covered |
+| **Foreign key constraints** | No explicit tests | ❌ Not covered |
+| **Index effectiveness** | No tests | ❌ Not covered |
+| **Edge cases** | No tests | ❌ Not covered |
+
+### Risk Areas Identified
+
+1. **HIGH RISK: Foreign Key Integrity**
+   - `code_symbols.inode` references `fs_current.inode` - deletion cascades not tested
+   - `code_dependencies` FKs reference `code_symbols.id` - orphan prevention not validated
+   - **Impact**: Data corruption if cascades fail silently
+
+2. **MEDIUM RISK: Symbol ID Collisions**
+   - Format `{file_path}:{symbol_name}` may collide with overloaded methods
+   - Implementation note mentions "append signature hash" but no test validates this
+   - **Impact**: Data loss or duplicate key errors
+
+3. **MEDIUM RISK: Recursive CTE Termination**
+   - Depth limit of 10 is arbitrary - cyclic dependencies could cause infinite loops if poorly bounded
+   - **Impact**: Query timeouts, resource exhaustion
+
+4. **LOW RISK: DuckPGQ Extension Availability**
+   - Property graph definition commented out pending extension availability
+   - No fallback behavior tested
+   - **Impact**: Feature unavailability in some deployments
+
+### Recommended Test Scenarios
+
+#### Given-When-Then Test Cases
+
+**TC-3.1-01: Symbol insertion with valid inode**
+```
+GIVEN fs_current contains inode 100
+WHEN inserting code_symbol with inode 100
+THEN symbol is created successfully
+AND queryable by id, name, kind, and language indexes
+```
+
+**TC-3.1-02: Symbol insertion with invalid inode (FK violation)**
+```
+GIVEN fs_current does NOT contain inode 999
+WHEN inserting code_symbol with inode 999
+THEN foreign key constraint error is raised
+AND no partial data remains
+```
+
+**TC-3.1-03: Dependency cascade on symbol deletion**
+```
+GIVEN code_symbol 'test:a' exists
+AND code_dependency 'test:a' -> 'test:b' exists
+WHEN deleting code_symbol 'test:a'
+THEN associated code_dependencies are cascade deleted
+```
+
+**TC-3.1-04: Transitive dependency query with cycles**
+```
+GIVEN symbols A, B, C exist
+AND A -> B, B -> C, C -> A (cycle)
+WHEN querying transitive dependencies from A with depth limit
+THEN query terminates within depth limit
+AND returns A, B, C without infinite loop
+```
+
+**TC-3.1-05: Symbol ID uniqueness with overloaded methods**
+```
+GIVEN two methods with same name but different signatures
+WHEN inserting both with signature-hash-appended IDs
+THEN both symbols coexist without collision
+```
+
+**TC-3.1-06: Index performance validation**
+```
+GIVEN 10,000+ code_symbols exist
+WHEN querying by name, kind, or language
+THEN query uses appropriate index (EXPLAIN ANALYZE)
+AND completes in < 100ms
+```
+
+### Concerns and Blockers
+
+| Type | Description | Severity |
+|------|-------------|----------|
+| **Concern** | Only 2 basic tests provided; no negative/edge cases | Medium |
+| **Concern** | FK cascade behavior untested - potential data integrity issues | High |
+| **Concern** | No performance benchmarks for graph traversal queries | Medium |
+| **Blocker** | None - story marked Done, retrospective QA only | N/A |
+
+### QA Recommendation
+
+**PASS WITH CONCERNS** - Schema design is sound and acceptance criteria are met. However, test coverage is minimal. Recommend adding the test scenarios above before building features on top of this schema, particularly:
+1. FK constraint validation tests (TC-3.1-02, TC-3.1-03)
+2. Cycle handling in recursive queries (TC-3.1-04)
+3. Performance baseline for graph queries (TC-3.1-06)
+
+---
+*QA Review by Quinn (Test Architect) | 2026-01-14*

@@ -9,7 +9,7 @@
 | **ID** | STORY-2.2 |
 | **Epic** | EPIC-DUCKAGENTFS-001 |
 | **Phase** | 2 - Vector Similarity Search |
-| **Status** | Done |
+| **Status** | Ready for Development |
 | **Priority** | High |
 | **File** | `schema/duckagentfs.sql` |
 | **Dependencies** | STORY-1.1 |
@@ -278,3 +278,79 @@ WHERE inode = 200;
 3. **Dimension Mismatch**: Queries must use same dimension as stored embeddings. Validate at application level.
 
 4. **NULL Handling**: Files without embeddings (binary, too small) should have NULL or no row in fs_embeddings.
+
+## QA Notes
+
+### Test Coverage Summary
+
+| Area | Coverage | Notes |
+|------|----------|-------|
+| DDL Creation | ✅ Adequate | Tables `fs_embeddings` and `fs_chunk_embeddings` defined with tests |
+| HNSW Index | ⚠️ Partial | Index definitions provided but require VSS extension (not testable without it) |
+| Similarity Functions | ✅ Adequate | Cosine, Euclidean, Inner Product all documented with examples |
+| Model Tracking | ✅ Adequate | Model column and content_hash for reproducibility |
+| Chunk Embeddings | ⚠️ Partial | Schema defined but no dedicated tests for chunked operations |
+
+### Risk Areas Identified
+
+| Risk | Probability | Impact | Mitigation |
+|------|-------------|--------|------------|
+| **Dimension Mismatch** | Medium | High | No runtime validation - queries with wrong dimension will fail silently or error. Recommend application-level dimension validation before insert/query. |
+| **VSS Extension Availability** | Medium | High | HNSW index creation depends on optional extension. Graceful degradation path not defined for environments without VSS. |
+| **Memory Pressure** | Low | Medium | HNSW indexes are memory-intensive. No guidance on index size limits or partitioning thresholds. |
+| **Foreign Key Integrity** | Medium | Medium | `fs_embeddings.inode` references `fs_tree.inode` implicitly but no FK constraint enforced. Orphan embeddings possible. |
+| **Content Hash Collision** | Low | Low | MD5/SHA collision unlikely but possible; consider stronger hash for critical applications. |
+
+### Recommended Test Scenarios
+
+1. **Schema Validation Tests**
+   - [ ] Verify `fs_embeddings` table creation with correct column types
+   - [ ] Verify `fs_chunk_embeddings` table creation and composite PK
+   - [ ] Test INSERT with valid embedding array of configured dimension
+   - [ ] Test INSERT with mismatched dimension (expect error or truncation behavior)
+
+2. **Similarity Search Tests (without VSS)**
+   - [ ] Cosine similarity ordering verification (Test 2 exists ✓)
+   - [ ] Euclidean distance ordering verification
+   - [ ] Inner product ordering verification
+   - [ ] Edge case: identical vectors (similarity = 1.0)
+   - [ ] Edge case: orthogonal vectors (similarity = 0.0)
+
+3. **Content Hash Change Detection**
+   - [ ] Initial insert with hash (Test 3 exists ✓)
+   - [ ] Update detection when hash differs
+   - [ ] No-op when hash matches (idempotency)
+
+4. **Chunk Embedding Tests**
+   - [ ] Insert chunked embedding with correct offsets
+   - [ ] Verify chunk_idx ordering
+   - [ ] Query chunks for specific file and validate content_preview
+   - [ ] Test chunk overlap boundary conditions
+
+5. **Integration Tests**
+   - [ ] JOIN with `fs_tree` returns correct paths
+   - [ ] Filter regular files only (mode bitmask)
+   - [ ] Handle missing embeddings gracefully (LEFT JOIN behavior)
+
+### Concerns
+
+1. **No FK Constraint**: The `fs_embeddings.inode` should reference `fs_tree.inode` with ON DELETE CASCADE to prevent orphans when files are deleted.
+
+2. **Dimension Hardcoded**: Using `FLOAT[1536]` hardcodes dimension. Consider using a dynamic approach or clear migration path documentation.
+
+3. **Test 2 Dimension Mismatch**: Tests use `FLOAT[3]` but schema defines `FLOAT[1536]`. Tests should either:
+   - Use actual dimension, OR
+   - Document that dimension can be reconfigured for testing
+
+4. **Missing VSS Fallback**: No documented behavior for systems without VSS extension. Recommend adding a linear scan fallback with performance warning.
+
+### QA Verdict
+
+**Status**: PASS with recommendations
+
+The story meets acceptance criteria. All schema elements are defined, and basic tests exist. However, address the following before production use:
+
+- Add FK constraint for referential integrity
+- Add dimension validation at application layer
+- Document VSS extension fallback strategy
+- Expand chunk embedding test coverage

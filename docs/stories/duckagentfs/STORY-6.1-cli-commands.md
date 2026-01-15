@@ -9,7 +9,7 @@
 | **ID** | STORY-6.1 |
 | **Epic** | EPIC-DUCKAGENTFS-001 |
 | **Phase** | 6 - Operations |
-| **Status** | Todo |
+| **Status** | Ready for Development |
 | **Priority** | Medium |
 | **File** | `cli/src/parser.rs`, `cli/src/cmd/` |
 | **Dependencies** | All previous stories |
@@ -24,9 +24,15 @@
 
 - [ ] `agentfs init --backend duckdb`
 - [ ] `agentfs search <query>`
-- [ ] `agentfs snapshot --at <event_id>`
+- [ ] `agentfs snapshot list <agent>` - List available event IDs
+- [ ] `agentfs snapshot <agent> cat --at <id> <path>` - Read file at snapshot
+- [ ] `agentfs snapshot <agent> ls --at <id> <path>` - List directory at snapshot
+- [ ] `agentfs snapshot <agent> diff --from <X> --to <Y>` - Show diff between snapshots
 - [ ] `agentfs graph deps <file>`
 - [ ] Help text and examples
+
+> **Note**: Snapshot CLI commands consolidated from STORY-1.4 per SCP-2026-01-14
+> **Note**: Search CLI command consolidated from STORY-2.3 per SCP-2026-01-15
 
 ## Technical Specification
 

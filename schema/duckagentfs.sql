@@ -205,7 +205,7 @@ CREATE TABLE IF NOT EXISTS fs_chunk_embeddings (
 -- Code symbols (functions, classes, modules, etc.)
 CREATE TABLE IF NOT EXISTS code_symbols (
     id          VARCHAR PRIMARY KEY,  -- 'file:symbol_name' or unique ID
-    inode       UBIGINT NOT NULL,
+    inode       UBIGINT NOT NULL,     -- References inode in fs_journal (no FK to view)
     name        VARCHAR NOT NULL,
     kind        VARCHAR NOT NULL,     -- 'function', 'class', 'module', 'variable', 'type'
     language    VARCHAR,
@@ -214,8 +214,8 @@ CREATE TABLE IF NOT EXISTS code_symbols (
     signature   VARCHAR,              -- Function/method signature
     docstring   VARCHAR,
     visibility  VARCHAR DEFAULT 'public',  -- 'public', 'private', 'protected'
-    metadata    JSON,
-    FOREIGN KEY (inode) REFERENCES fs_current(inode)
+    metadata    JSON
+    -- Note: No FK to fs_current because DuckDB doesn't support FK to views
 );
 
 -- Dependencies between symbols

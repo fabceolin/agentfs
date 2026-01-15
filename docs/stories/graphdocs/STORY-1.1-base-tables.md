@@ -218,3 +218,53 @@ WHERE d.id = 'child';
 2. **Cascade Deletes**: Sections and variables are deleted when document is deleted
 3. **Self-Referential**: Both documents and sections have self-references for hierarchy
 4. **Unique Constraints**: Prevent duplicate variable names per document
+
+## QA Notes
+
+### Test Coverage Summary
+
+| Area | Coverage | Notes |
+|------|----------|-------|
+| **Table Creation** | ✅ Covered | DDL syntax verified in Tests 1-3 |
+| **Foreign Key Constraints** | ✅ Covered | CASCADE deletes tested implicitly |
+| **Self-Referential Joins** | ⚠️ Partial | Template inheritance tested; section parent hierarchy not explicitly tested |
+| **Check Constraints** | ⚠️ Partial | `valid_section_type` and `valid_heading_level` not explicitly tested for rejection |
+| **Index Performance** | ❌ Not Covered | No query performance tests included |
+| **Concurrent Access** | ❌ Not Covered | No multi-writer scenario tests |
+
+### Risk Areas Identified
+
+1. **HIGH RISK - Circular Reference Prevention**: Self-referential FKs in `gd_sections` (parent_id, source_section) and `gd_documents` (base_template) do not include application-level or trigger-based cycle detection. A circular inheritance chain could cause infinite loops in rendering.
+
+2. **MEDIUM RISK - Orphaned Sections**: If `parent_id` references are not cascaded correctly, deleting a parent section could leave orphaned children with broken hierarchy.
+
+3. **MEDIUM RISK - JSON Validation**: `gd_variables.value` accepts any JSON but `var_type` is not enforced at DB level. A `var_type='number'` with `value='"text"'` would pass constraints.
+
+4. **LOW RISK - Edge Graph Integrity**: No constraint prevents edges pointing to sections in different documents, which could create cross-document graph traversal issues.
+
+### Recommended Test Scenarios
+
+| ID | Scenario | Priority | Type |
+|----|----------|----------|------|
+| QA-1 | Attempt circular `base_template` (doc A → doc B → doc A) | High | Negative |
+| QA-2 | Attempt circular `parent_id` in sections | High | Negative |
+| QA-3 | Insert section with invalid `section_type` (expect rejection) | Medium | Constraint |
+| QA-4 | Insert heading with `level=7` (expect rejection) | Medium | Constraint |
+| QA-5 | Delete document and verify all sections/variables cascaded | Medium | Cascade |
+| QA-6 | Delete parent section and verify child section state | Medium | Cascade |
+| QA-7 | Create edge between sections in different documents | Low | Boundary |
+| QA-8 | Insert variable with mismatched `var_type` and JSON `value` | Low | Validation |
+
+### Concerns / Blockers
+
+1. **No Cycle Detection**: The schema relies on application code to prevent circular references. Consider adding a trigger or check constraint, or documenting the required application-level validation clearly.
+
+2. **Test SQL Lacks Assertions**: Tests 1-3 use comments for expected values but no actual assertion mechanism. Recommend wrapping tests in a test framework (e.g., `pgTAP` or DuckDB test harness) for automated validation.
+
+3. **Missing Cleanup**: Test SQL does not include `DELETE` statements, which may cause test pollution in repeated runs.
+
+### QA Decision
+
+**Status**: PASS with CONCERNS
+
+The schema design is sound and the existing tests validate the happy path. However, circular reference prevention and constraint validation tests should be added before production use. The concerns noted above are advisory and do not block the "Done" status for MVP purposes.

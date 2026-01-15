@@ -1,0 +1,186 @@
+# QA Gate: STORY-3.1 - Schema Code Graph
+# Generated: 2026-01-14
+# Version: 3.0
+
+story:
+  id: "STORY-3.1"
+  title: "Schema Code Graph"
+  epic: "EPIC-DUCKAGENTFS-001"
+  phase: "3 - Property Graphs (DuckPGQ)"
+  priority: "Medium"
+  status: "Ready for Development"
+
+test_design:
+  document: "docs/qa/assessments/3.1-schema-code-graph-test-design-20260114-v3.md"
+  designer: "Quinn (Test Architect)"
+  date: "2026-01-14"
+  version: "3.0"
+
+metrics:
+  total_scenarios: 38
+  by_level:
+    unit: 8
+    integration: 22
+    e2e: 8
+  by_priority:
+    p0: 16
+    p1: 14
+    p2: 8
+
+acceptance_criteria_coverage:
+  ac1_code_symbols_table:
+    tests: 8
+    ids: ["3.1-INT-001", "3.1-UNIT-001", "3.1-UNIT-002", "3.1-INT-002", "3.1-INT-003", "3.1-INT-004", "3.1-INT-019", "3.1-INT-021"]
+  ac2_code_dependencies_table:
+    tests: 8
+    ids: ["3.1-INT-005", "3.1-UNIT-003", "3.1-INT-006", "3.1-INT-007", "3.1-INT-008", "3.1-INT-009", "3.1-INT-017", "3.1-INT-018"]
+  ac3_property_graph:
+    tests: 4
+    ids: ["3.1-UNIT-004", "3.1-UNIT-005", "3.1-UNIT-006", "3.1-E2E-001"]
+  ac4_indexes:
+    tests: 6
+    ids: ["3.1-UNIT-007", "3.1-UNIT-008", "3.1-INT-010", "3.1-INT-011", "3.1-E2E-002", "3.1-E2E-006"]
+  ac5_foreign_key:
+    tests: 6
+    ids: ["3.1-INT-012", "3.1-INT-013", "3.1-INT-014", "3.1-INT-015", "3.1-INT-020", "3.1-INT-022"]
+  cross_cutting:
+    tests: 6
+    ids: ["3.1-E2E-003", "3.1-INT-016", "3.1-E2E-004", "3.1-E2E-005", "3.1-E2E-007", "3.1-E2E-008"]
+
+p0_tests:
+  description: "Critical tests that must pass 100% for story acceptance"
+  count: 16
+  tests:
+    - id: "3.1-INT-001"
+      description: "code_symbols table exists with all 12 columns"
+    - id: "3.1-UNIT-001"
+      description: "kind enum validation"
+    - id: "3.1-INT-002"
+      description: "Insert symbol with optional fields NULL"
+    - id: "3.1-INT-005"
+      description: "code_dependencies table exists with correct schema"
+    - id: "3.1-UNIT-003"
+      description: "dep_type enum validation"
+    - id: "3.1-INT-006"
+      description: "Composite PK enforcement"
+    - id: "3.1-UNIT-007"
+      description: "4 indexes on code_symbols"
+    - id: "3.1-UNIT-008"
+      description: "3 indexes on code_dependencies"
+    - id: "3.1-INT-012"
+      description: "Valid FK insertion"
+    - id: "3.1-INT-013"
+      description: "Invalid FK rejection"
+    - id: "3.1-INT-014"
+      description: "File deletion cascades"
+    - id: "3.1-INT-019"
+      description: "Overloaded method uniqueness"
+    - id: "3.1-INT-020"
+      description: "Symbol deletion cascades"
+    - id: "3.1-INT-022"
+      description: "Incremental update workflow"
+    - id: "3.1-E2E-003"
+      description: "Impact analysis query (callers)"
+    - id: "3.1-E2E-005"
+      description: "Circular dependency handling"
+
+story_qa_notes_alignment:
+  source: "STORY-3.1 QA Notes section"
+  mappings:
+    - story_tc: "TC-3.1-01"
+      test_id: "3.1-INT-012"
+      description: "Symbol insertion with valid inode"
+    - story_tc: "TC-3.1-02"
+      test_id: "3.1-INT-013"
+      description: "Symbol insertion with invalid inode"
+    - story_tc: "TC-3.1-03"
+      test_id: "3.1-INT-020"
+      description: "Dependency cascade on symbol deletion"
+    - story_tc: "TC-3.1-04"
+      test_id: "3.1-E2E-005"
+      description: "Transitive dependency with cycles"
+    - story_tc: "TC-3.1-05"
+      test_id: "3.1-INT-019"
+      description: "Symbol ID uniqueness with overloads"
+    - story_tc: "TC-3.1-06"
+      test_id: "3.1-E2E-006"
+      description: "Index performance validation"
+
+risk_coverage:
+  - id: "R1"
+    risk: "Invalid symbol IDs breaking graph"
+    severity: "High"
+    tests: ["3.1-INT-004", "3.1-INT-013", "3.1-INT-019"]
+  - id: "R2"
+    risk: "Orphan dependencies after file delete"
+    severity: "High"
+    tests: ["3.1-INT-014", "3.1-INT-020", "3.1-INT-022"]
+  - id: "R3"
+    risk: "Graph query performance degradation"
+    severity: "Medium"
+    tests: ["3.1-E2E-002", "3.1-E2E-006"]
+  - id: "R4"
+    risk: "Circular dependency infinite loop"
+    severity: "Critical"
+    tests: ["3.1-E2E-004", "3.1-E2E-005"]
+  - id: "R5"
+    risk: "FK pointing to wrong table"
+    severity: "Medium"
+    tests: ["3.1-INT-015"]
+  - id: "R6"
+    risk: "Missing dependency types"
+    severity: "Low"
+    tests: ["3.1-UNIT-003"]
+  - id: "R7"
+    risk: "Overloaded method ID collision"
+    severity: "High"
+    tests: ["3.1-INT-019"]
+  - id: "R8"
+    risk: "DuckPGQ extension unavailable"
+    severity: "Low"
+    tests: ["3.1-E2E-001"]
+
+execution_phases:
+  - phase: 1
+    name: "Schema Validation"
+    blocking: true
+    tests: ["3.1-UNIT-001", "3.1-UNIT-003", "3.1-UNIT-007", "3.1-UNIT-008"]
+  - phase: 2
+    name: "Core FK/Constraint Tests"
+    tests: ["3.1-INT-001", "3.1-INT-002", "3.1-INT-005", "3.1-INT-006", "3.1-INT-012", "3.1-INT-013", "3.1-INT-014", "3.1-INT-019", "3.1-INT-020"]
+  - phase: 3
+    name: "Graph Queries"
+    tests: ["3.1-INT-016", "3.1-E2E-003", "3.1-E2E-005", "3.1-E2E-007"]
+  - phase: 4
+    name: "Extended Functionality"
+    tests: ["3.1-UNIT-002", "3.1-UNIT-004", "3.1-INT-003", "3.1-INT-004", "3.1-INT-007", "3.1-INT-008", "3.1-INT-010", "3.1-INT-011", "3.1-INT-015", "3.1-INT-021", "3.1-INT-022", "3.1-E2E-001", "3.1-E2E-004", "3.1-E2E-006"]
+  - phase: 5
+    name: "Edge Cases and Performance"
+    tests: ["3.1-UNIT-005", "3.1-UNIT-006", "3.1-INT-009", "3.1-INT-017", "3.1-INT-018", "3.1-E2E-002", "3.1-E2E-008"]
+
+pass_criteria:
+  p0:
+    required_pass_rate: 100
+    description: "All P0 tests must pass for story acceptance"
+  p1:
+    required_pass_rate: 95
+    description: "At least 95% of P1 tests must pass"
+  p2:
+    required_pass_rate: 90
+    description: "At least 90% of P2 tests must pass"
+
+dependencies:
+  stories:
+    - id: "STORY-1.1"
+      description: "Core filesystem schema (fs_journal, fs_current)"
+  extensions:
+    - name: "duckpgq"
+      required: false
+      affects: ["3.1-E2E-001"]
+      fallback: "Skip DuckPGQ property graph tests"
+
+notes:
+  - "FK to fs_current (view) requires fs_journal to be populated first"
+  - "Cascade delete behavior may require schema modification (ON DELETE CASCADE)"
+  - "DuckPGQ extension tests should be conditional on extension availability"
+  - "Performance tests (3.1-E2E-002) require generating 10K+ test records"

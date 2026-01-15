@@ -9,7 +9,7 @@
 | **ID** | STORY-2.3 |
 | **Epic** | EPIC-DUCKAGENTFS-001 |
 | **Phase** | 2 - Vector Similarity Search |
-| **Status** | Partial |
+| **Status** | Ready for Development |
 | **Priority** | High |
 | **File** | `sdk/rust/src/filesystem/duckagentfs.rs` |
 | **Dependencies** | STORY-2.1, STORY-2.2 |
@@ -27,10 +27,11 @@ Semantic search allows finding files based on meaning rather than exact keyword 
 ## Acceptance Criteria
 
 - [x] Method `search(query, limit)` in DuckAgentFS
-- [ ] CLI: `agentfs search "query"`
 - [ ] Return path, score, preview
 - [ ] Support filters (file type, directory, date range)
 - [ ] Support chunk-level search
+
+> **Note**: CLI command (`agentfs search`) moved to STORY-6.1
 
 ## Technical Specification
 
@@ -240,82 +241,6 @@ impl DuckAgentFS {
 }
 ```
 
-### CLI Implementation
-
-```rust
-// cli/src/cmd/search.rs
-
-pub async fn handle_search_command(
-    id_or_path: String,
-    query: String,
-    limit: usize,
-    directory: Option<String>,
-    extensions: Option<Vec<String>>,
-    chunks: bool,
-) -> Result<()> {
-    let fs = open_duckagentfs(&id_or_path).await?;
-
-    let options = SearchOptions {
-        limit,
-        directory,
-        extensions,
-        search_chunks: chunks,
-        ..Default::default()
-    };
-
-    let results = if chunks {
-        fs.search_chunks(&query, options).await?
-    } else {
-        fs.search(&query, options).await?
-    };
-
-    // Display results
-    for result in results {
-        println!("{} (score: {:.3})", result.path, result.score);
-        if !result.preview.is_empty() {
-            let preview = result.preview
-                .chars()
-                .take(100)
-                .collect::<String>();
-            println!("  {}", preview);
-        }
-        if let Some(chunk) = &result.chunk {
-            println!("  [chunk {} @ {}..{}]",
-                chunk.index, chunk.start_offset, chunk.end_offset);
-        }
-        println!();
-    }
-
-    Ok(())
-}
-```
-
-### CLI Usage
-
-```bash
-# Basic search
-agentfs search my-agent "meeting notes about project"
-
-# With limit
-agentfs search my-agent "API documentation" --limit 5
-
-# Filter by directory
-agentfs search my-agent "test cases" --dir /src/tests
-
-# Filter by extension
-agentfs search my-agent "configuration" --ext .json --ext .yaml
-
-# Chunk-level search
-agentfs search my-agent "error handling" --chunks
-
-# Combined
-agentfs search my-agent "database schema" \
-    --dir /docs \
-    --ext .md \
-    --limit 10 \
-    --min-score 0.7
-```
-
 ## Tests
 
 ### Test 1: Basic Search
@@ -392,8 +317,6 @@ async fn test_extension_filter() {
 | `sdk/rust/src/filesystem/duckagentfs.rs` | search() implementation |
 | `sdk/rust/src/embedding.rs` | Query embedding generation |
 | `schema/duckagentfs.sql` | fs_embeddings tables |
-| `cli/src/cmd/search.rs` | CLI command (new) |
-| `cli/src/parser.rs` | CLI args parsing |
 
 ## Implementation Notes
 

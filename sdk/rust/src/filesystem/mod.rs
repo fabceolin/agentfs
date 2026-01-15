@@ -1,4 +1,5 @@
 pub mod agentfs;
+pub mod duckagentfs;
 #[cfg(unix)]
 pub mod hostfs;
 pub mod overlayfs;
@@ -10,6 +11,7 @@ use thiserror::Error;
 
 // Re-export implementations
 pub use agentfs::AgentFS;
+pub use duckagentfs::{DuckAgentFS, DuckAgentFSConfig, DuckConnectionPool};
 #[cfg(unix)]
 pub use hostfs::HostFS;
 pub use overlayfs::OverlayFS;

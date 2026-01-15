@@ -9,7 +9,7 @@
 | **ID** | STORY-2.3 |
 | **Epic** | EPIC-GRAPHDOCS-001 |
 | **Phase** | 2 - Parsing and Population |
-| **Status** | Todo |
+| **Status** | Ready for Development |
 | **Priority** | Medium |
 | **File** | `cli/src/cmd/graphdocs.rs` |
 | **Dependencies** | STORY-2.1, STORY-2.2 |

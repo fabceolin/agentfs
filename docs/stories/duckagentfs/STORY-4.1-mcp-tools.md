@@ -9,7 +9,7 @@
 | **ID** | STORY-4.1 |
 | **Epic** | EPIC-DUCKAGENTFS-001 |
 | **Phase** | 4 - MCP Server Integration |
-| **Status** | Todo |
+| **Status** | Ready for Development |
 | **Priority** | Medium |
 | **File** | `cli/src/cmd/mcp_server.rs` |
 | **Dependencies** | STORY-2.3, STORY-1.4, STORY-3.3 |

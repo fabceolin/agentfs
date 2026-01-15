@@ -9,7 +9,7 @@
 | **ID** | STORY-2.2 |
 | **Epic** | EPIC-GRAPHDOCS-001 |
 | **Phase** | 2 - Parsing and Population |
-| **Status** | Todo |
+| **Status** | Ready for Development |
 | **Priority** | Medium |
 | **File** | `sdk/rust/src/graphdocs/llm_converter.rs` |
 | **Dependencies** | STORY-2.1 |

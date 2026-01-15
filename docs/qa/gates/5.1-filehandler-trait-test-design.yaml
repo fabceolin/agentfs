@@ -1,0 +1,85 @@
+# QA Gate: Story 5.1 - FileHandler Trait Test Design
+# Generated: 2026-01-14
+# Designer: Quinn (Test Architect)
+
+story:
+  id: "5.1"
+  title: "FileHandler Trait"
+  epic: "EPIC-DUCKAGENTFS-001"
+  phase: 5
+
+test_design:
+  scenarios_total: 42
+  by_level:
+    unit: 22
+    integration: 16
+    e2e: 4
+  by_priority:
+    p0: 14
+    p1: 16
+    p2: 8
+    p3: 4
+  coverage_gaps: []
+
+acceptance_criteria:
+  - id: AC1
+    description: "Trait FileHandler with async methods"
+    tests: 8
+    coverage: "full"
+  - id: AC2
+    description: "Support for priorities (lower = higher priority)"
+    tests: 10
+    coverage: "full"
+  - id: AC3
+    description: "Methods: can_handle, read, getattr, write, readdir"
+    tests: 16
+    coverage: "full"
+  - id: AC4
+    description: "Handler result type with Ok(Some), Ok(None), Err semantics"
+    tests: 8
+    coverage: "full"
+
+risks_mitigated:
+  - id: "RISK-priority-collision"
+    description: "Handlers with same priority"
+    tests: ["5.1-INT-006"]
+  - id: "RISK-async-race"
+    description: "Concurrent handler access"
+    tests: ["5.1-INT-022", "5.1-INT-023", "5.1-INT-024"]
+  - id: "RISK-error-propagation"
+    description: "Error stops chain and propagates"
+    tests: ["5.1-INT-019", "5.1-INT-021", "5.1-E2E-001"]
+  - id: "RISK-boundary-conditions"
+    description: "Offset/size edge cases"
+    tests: ["5.1-UNIT-012", "5.1-UNIT-013", "5.1-UNIT-014", "5.1-UNIT-015"]
+  - id: "RISK-stats-consistency"
+    description: "Virtual file stats match content"
+    tests: ["5.1-INT-016", "5.1-UNIT-025"]
+
+critical_tests:
+  p0:
+    - "5.1-UNIT-001"  # Async trait compiles
+    - "5.1-UNIT-002"  # Send + Sync bounds
+    - "5.1-UNIT-003"  # Default implementations
+    - "5.1-UNIT-006"  # Default priority
+    - "5.1-UNIT-007"  # Priority ordering
+    - "5.1-UNIT-010"  # can_handle signature
+    - "5.1-UNIT-012"  # Read slicing
+    - "5.1-UNIT-016"  # Write returns count
+    - "5.1-INT-001"   # Dynamic dispatch
+    - "5.1-INT-004"   # Registry sorting
+    - "5.1-INT-005"   # Dispatch respects priority
+    - "5.1-INT-017"   # Ok(Some) stops chain
+    - "5.1-INT-018"   # Ok(None) passes to next
+    - "5.1-INT-019"   # Err stops chain
+    - "5.1-INT-022"   # Concurrent reads
+
+test_locations:
+  unit: "cli/src/handler.rs"
+  integration: "cli/tests/handler_integration_tests.rs"
+  e2e: "cli/tests/handler_e2e_tests.rs"
+
+design_document: "docs/qa/assessments/5.1-filehandler-trait-test-design-20260114.md"
+
+gate_status: "PASS"
+gate_decision: "Test design comprehensive - all ACs covered with appropriate test levels"

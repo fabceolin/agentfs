@@ -1,0 +1,77 @@
+# Quality Gate: STORY-2.1 Embedding Generator Trait
+# Generated: 2026-01-14
+# Assessor: Quinn (Test Architect)
+
+gate:
+  story_id: "2.1"
+  story_title: "Embedding Generator Trait"
+  epic: "EPIC-DUCKAGENTFS-001"
+  phase: "2 - Vector Similarity Search"
+  assessment_date: "2026-01-14"
+
+test_design:
+  scenarios_total: 28
+  by_level:
+    unit: 16
+    integration: 9
+    e2e: 3
+  by_priority:
+    p0: 8
+    p1: 12
+    p2: 6
+    p3: 2
+  coverage_gaps: []
+
+acceptance_criteria_coverage:
+  - id: AC1
+    description: "Trait EmbeddingGenerator with async methods"
+    tests: 5
+    covered: true
+  - id: AC2
+    description: "NoOp implementation for tests"
+    tests: 3
+    covered: true
+  - id: AC3
+    description: "OpenAI implementation (conceptual)"
+    tests: 7
+    covered: true
+  - id: AC4
+    description: "Local/ONNX implementation (conceptual)"
+    tests: 5
+    covered: true
+  - id: AC5
+    description: "Chunked embedding strategy for large files"
+    tests: 8
+    covered: true
+
+risk_mitigations:
+  - risk: "API key exposure"
+    tests: ["2.1-INT-004"]
+  - risk: "Rate limiting failures"
+    tests: ["2.1-INT-005"]
+  - risk: "Memory exhaustion (large files)"
+    tests: ["2.1-UNIT-013", "2.1-UNIT-014"]
+  - risk: "Dimension mismatch across providers"
+    tests: ["2.1-UNIT-008", "2.1-UNIT-009", "2.1-INT-006"]
+  - risk: "Binary file corruption"
+    tests: ["2.1-E2E-003"]
+  - risk: "Semantic loss at chunk boundaries"
+    tests: ["2.1-UNIT-016"]
+
+decision:
+  status: PASS
+  rationale: |
+    Story STORY-2.1 demonstrates comprehensive test design coverage:
+    - All 5 acceptance criteria mapped to 28 test scenarios
+    - Proper shift-left approach (57% unit tests)
+    - Critical paths (P0) cover core trait behavior, provider integrations, and chunking
+    - Risk mitigations explicitly mapped to test scenarios
+    - No coverage gaps identified
+  conditions: []
+  recommendations:
+    - "Implement VCR/cassette recording for OpenAI tests to ensure CI stability"
+    - "Include small ONNX model fixture (all-MiniLM-L6-v2) in test assets"
+    - "Consider property-based testing for chunk boundary edge cases"
+
+artifacts:
+  test_design: "docs/qa/assessments/2.1-test-design-20260114.md"
