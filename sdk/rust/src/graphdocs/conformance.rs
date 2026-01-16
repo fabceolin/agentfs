@@ -320,6 +320,7 @@ impl TemplateManager {
             SectionContentType::Choice => (true, ""), // Validated separately
             SectionContentType::TemplateText => (true, ""), // Variables validated separately
             SectionContentType::Paragraphs => (true, ""), // No strict validation
+            SectionContentType::Relationship => (true, ""), // Rendered dynamically via relationships
         };
 
         if !type_matches && !suggestion.is_empty() {

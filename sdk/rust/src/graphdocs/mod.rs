@@ -5,6 +5,8 @@ pub mod llm_converter;
 pub mod normalizer;
 pub mod openai;
 pub mod parser;
+pub mod relationships;
+pub mod renderer;
 pub mod template_schema;
 pub mod variable_types;
 
@@ -44,4 +46,13 @@ pub use conformance::{
 
 pub use agent_transformer::{
     batch_transform, AgentTransformer, ConformArgs, ConformanceResult, TransformResult,
+};
+
+pub use relationships::{
+    Cardinality, Direction, RelatedDocument, RelationshipDecl, RelationshipEdgeType,
+    ResolvedRelationship,
+};
+
+pub use renderer::{
+    validate_include_path, DocumentContext, RenderConfig, RenderError, TemplateProcessor,
 };

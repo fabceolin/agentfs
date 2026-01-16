@@ -6,6 +6,8 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+use super::relationships::RelationshipDecl;
+
 /// BMAD Template Format
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BmadTemplate {
@@ -14,6 +16,9 @@ pub struct BmadTemplate {
     pub workflow: Option<WorkflowConfig>,
     #[serde(default)]
     pub agent_config: Option<AgentConfig>,
+    /// Relationship declarations for cross-document queries (STORY-2.1.5)
+    #[serde(default)]
+    pub relationships: Option<Vec<RelationshipDecl>>,
     pub sections: Vec<TemplateSection>,
 }
 
@@ -84,6 +89,12 @@ pub struct TemplateSection {
     pub elicit: Option<bool>,
     #[serde(default)]
     pub sections: Option<Vec<TemplateSection>>, // Nested sections
+    /// Reference to relationships[].id for Relationship section type (STORY-2.1.5)
+    #[serde(default)]
+    pub relationship: Option<String>,
+    /// Tera/Jinja2 template for rendering relationship data (STORY-2.1.5)
+    #[serde(default)]
+    pub render: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq, Eq)]
@@ -99,6 +110,8 @@ pub enum SectionContentType {
     TemplateText,
     Code,
     Mermaid,
+    /// Renders related documents via relationship declaration (STORY-2.1.5)
+    Relationship,
 }
 
 impl BmadTemplate {
@@ -327,6 +340,8 @@ sections:
             editors: None,
             elicit: None,
             sections: None,
+            relationship: None,
+            render: None,
         };
 
         // Default is required
@@ -348,6 +363,8 @@ sections:
             editors: None,
             elicit: None,
             sections: None,
+            relationship: None,
+            render: None,
         };
 
         assert!(!BmadTemplate::is_section_required(&section));

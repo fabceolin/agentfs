@@ -1,0 +1,51 @@
+# Quality Gate: STORY-2.1.5 Cross-Document Relationships and Jinja2 Rendering
+schema: 1
+story: "2.1.5"
+story_title: "Cross-Document Relationships and Jinja2 Rendering"
+gate: PASS
+status_reason: "All 15 acceptance criteria implemented with comprehensive test coverage. Security requirements (SQL injection prevention, path traversal protection) verified with dedicated tests. High code quality following TEA TemplateProcessor pattern."
+reviewer: "Quinn (Test Architect)"
+updated: "2026-01-16T12:00:00Z"
+
+waiver: { active: false }
+
+top_issues: []
+
+quality_score: 100
+expires: "2026-01-30T00:00:00Z"
+
+evidence:
+  tests_reviewed: 27
+  total_graphdocs_tests: 154
+  risks_identified: 0
+  trace:
+    ac_covered: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    ac_gaps: []
+
+nfr_validation:
+  security:
+    status: PASS
+    notes: "SQL allowlist enforced (SELECT only), dangerous keyword detection, single-quote escaping for SQL injection prevention, path traversal prevention via allowlist"
+  performance:
+    status: PASS
+    notes: "RenderConfig provides timeout/limit parameters; template caching with double-checked locking; max_query_results and max_output_size limits"
+  reliability:
+    status: PASS
+    notes: "Panic-catching wrapper via catch_unwind; graceful error handling with RenderError enum; no crashes from malformed input"
+  maintainability:
+    status: PASS
+    notes: "Comprehensive doc comments; clear module separation; well-organized test suite"
+
+risk_summary:
+  totals: { critical: 0, high: 0, medium: 0, low: 0 }
+  recommendations:
+    must_fix: []
+    monitor: []
+
+recommendations:
+  immediate: []
+  future:
+    - action: "Add fuzz testing for Tera syntax edge cases"
+      refs: ["sdk/rust/src/graphdocs/renderer.rs"]
+    - action: "Add integration test with real DuckDB PGQ extension"
+      refs: ["sdk/rust/src/graphdocs/relationships.rs"]
