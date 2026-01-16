@@ -26,5 +26,6 @@ Temporary Items
 .apdisk
 .agentfs
 
+docs/workflows/
 docs/stories/all-stories-parallel.dot
 docs/stories/all-stories-parallel.yaml

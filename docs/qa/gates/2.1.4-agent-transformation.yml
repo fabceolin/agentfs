@@ -1,0 +1,60 @@
+schema: 1
+story: '2.1.4'
+story_title: 'Agent-Based Transformation'
+gate: PASS
+status_reason: 'All acceptance criteria met. Tests pass (11/12, 1 ignored as expected). Code quality good with proper error handling and fallback mechanisms.'
+reviewer: 'Quinn (Test Architect)'
+updated: '2026-01-16T14:45:00Z'
+
+top_issues: []
+
+waiver:
+  active: false
+
+quality_score: 100
+expires: '2026-01-30T14:45:00Z'
+
+evidence:
+  tests_reviewed: 12
+  tests_passing: 11
+  tests_ignored: 1
+  risks_identified: 0
+  trace:
+    ac_covered: [1, 2, 3, 4]
+    ac_gaps: []
+
+nfr_validation:
+  security:
+    status: PASS
+    notes: 'Subprocess execution with controlled JSON input, no direct path execution'
+  performance:
+    status: PASS
+    notes: 'Async operations used appropriately, rule-based fallback avoids unnecessary LLM calls'
+  reliability:
+    status: PASS
+    notes: 'Graceful fallback to rule-based transformation when LLM fails or returns empty'
+  maintainability:
+    status: PASS
+    notes: 'Well-documented code with module-level docs, clear struct organization'
+
+recommendations:
+  immediate: []
+  future:
+    - action: 'Consider adding subprocess timeout to prevent indefinite hangs'
+      refs: ['sdk/rust/src/graphdocs/agent_transformer.rs:88']
+    - action: 'Add error path tests for TEA subprocess failures'
+      refs: ['sdk/rust/src/graphdocs/agent_transformer.rs']
+
+acceptance_criteria_trace:
+  - ac: 'Use local YAML agents with GGUF model (gemma3:e4b) to transform non-conforming documents'
+    status: PASS
+    evidence: 'agents/document-conformance-agent.yaml and agents/document-transformer-agent.yaml exist with proper GGUF configuration'
+  - ac: 'Call TEA binary as subprocess (not embedded)'
+    status: PASS
+    evidence: 'AgentTransformer::run_agent() uses tokio::process::Command to spawn TEA subprocess'
+  - ac: 'Support dry-run mode to preview changes'
+    status: PASS
+    evidence: 'ConformArgs.dry_run flag, handled in batch_transform() and CLI handle_conform()'
+  - ac: 'Provide CLI interface for batch transformation'
+    status: PASS
+    evidence: 'cli/src/cmd/graphdocs.rs::handle_conform() with --dry-run, --model-path, --agents-dir flags'
