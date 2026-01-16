@@ -1,12 +1,12 @@
 pub mod agent_transformer;
+pub mod conformance;
+pub mod embedding_matcher;
 pub mod llm_converter;
+pub mod normalizer;
 pub mod openai;
 pub mod parser;
-pub mod variable_types;
-pub mod normalizer;
-pub mod embedding_matcher;
 pub mod template_schema;
-pub mod conformance;
+pub mod variable_types;
 
 pub use llm_converter::{
     ConvertError, LLMClient, LLMConverter, LLMDocumentSchema, LLMError, LLMRelationship,
@@ -37,9 +37,9 @@ pub use template_schema::{
 };
 
 pub use conformance::{
-    is_template_file, scan_directory, BmadConformanceResult, ChoiceViolation, ConformanceSuggestion,
-    MarkdownConformanceResult, MissingSection, SuggestionKind, TemplateManager, TypeViolation,
-    TEMPLATE_PATTERNS,
+    is_template_file, scan_directory, BmadConformanceResult, ChoiceViolation,
+    ConformanceSuggestion, MarkdownConformanceResult, MissingSection, SuggestionKind,
+    TemplateManager, TypeViolation, TEMPLATE_PATTERNS,
 };
 
 pub use agent_transformer::{

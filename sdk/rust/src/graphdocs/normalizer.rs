@@ -43,8 +43,8 @@ pub const STATUS_MAPPINGS: &[(&str, &str)] = &[
     ("TODO", "Draft"),
     ("Planned", "Draft"),
     // Optional/Experimental markers (keep Done status but flag)
-    ("Optional", "Done"),      // with optional=true flag
-    ("Experimental", "Done"),  // with experimental=true flag
+    ("Optional", "Done"),     // with optional=true flag
+    ("Experimental", "Done"), // with experimental=true flag
 ];
 
 /// Extended status enum to handle edge cases
@@ -58,9 +58,7 @@ pub enum ExtendedStatus {
     Review,
     Done,
     // Extended statuses
-    Superseded {
-        see_also: Option<String>,
-    },
+    Superseded { see_also: Option<String> },
     Cancelled,
     Deprecated,
 }
@@ -129,7 +127,7 @@ fn normalize_status_text(raw: &str) -> String {
     // Remove emoji
     text = text.replace("✅", "").replace("🔄", "").replace("⏳", "");
     // Extract first word/phrase before special chars
-    if let Some(idx) = text.find(|c| c == '-' || c == '(' || c == '|') {
+    if let Some(idx) = text.find(['-', '(', '|']) {
         text = text[..idx].to_string();
     }
     text.trim().to_string()
@@ -198,17 +196,38 @@ mod tests {
 
     #[test]
     fn test_status_normalization_done_variants() {
-        assert_eq!(extract_status("[Done]").unwrap().status, ExtendedStatus::Done);
-        assert_eq!(extract_status("[**Done**]").unwrap().status, ExtendedStatus::Done);
-        assert_eq!(extract_status("[Complete]").unwrap().status, ExtendedStatus::Done);
-        assert_eq!(extract_status("[DONE]").unwrap().status, ExtendedStatus::Done);
-        assert_eq!(extract_status("[Completed]").unwrap().status, ExtendedStatus::Done);
+        assert_eq!(
+            extract_status("[Done]").unwrap().status,
+            ExtendedStatus::Done
+        );
+        assert_eq!(
+            extract_status("[**Done**]").unwrap().status,
+            ExtendedStatus::Done
+        );
+        assert_eq!(
+            extract_status("[Complete]").unwrap().status,
+            ExtendedStatus::Done
+        );
+        assert_eq!(
+            extract_status("[DONE]").unwrap().status,
+            ExtendedStatus::Done
+        );
+        assert_eq!(
+            extract_status("[Completed]").unwrap().status,
+            ExtendedStatus::Done
+        );
     }
 
     #[test]
     fn test_status_normalization_dev_complete() {
-        assert_eq!(extract_status("[Dev Complete]").unwrap().status, ExtendedStatus::Review);
-        assert_eq!(extract_status("[Development Complete]").unwrap().status, ExtendedStatus::Review);
+        assert_eq!(
+            extract_status("[Dev Complete]").unwrap().status,
+            ExtendedStatus::Review
+        );
+        assert_eq!(
+            extract_status("[Development Complete]").unwrap().status,
+            ExtendedStatus::Review
+        );
     }
 
     #[test]
@@ -258,25 +277,46 @@ mod tests {
 
     #[test]
     fn test_draft_variants() {
-        assert_eq!(extract_status("[Draft]").unwrap().status, ExtendedStatus::Draft);
-        assert_eq!(extract_status("[TODO]").unwrap().status, ExtendedStatus::Draft);
-        assert_eq!(extract_status("[Planned]").unwrap().status, ExtendedStatus::Draft);
+        assert_eq!(
+            extract_status("[Draft]").unwrap().status,
+            ExtendedStatus::Draft
+        );
+        assert_eq!(
+            extract_status("[TODO]").unwrap().status,
+            ExtendedStatus::Draft
+        );
+        assert_eq!(
+            extract_status("[Planned]").unwrap().status,
+            ExtendedStatus::Draft
+        );
     }
 
     #[test]
     fn test_cancelled_status() {
-        assert_eq!(extract_status("[Cancelled]").unwrap().status, ExtendedStatus::Cancelled);
-        assert_eq!(extract_status("[Canceled]").unwrap().status, ExtendedStatus::Cancelled);
+        assert_eq!(
+            extract_status("[Cancelled]").unwrap().status,
+            ExtendedStatus::Cancelled
+        );
+        assert_eq!(
+            extract_status("[Canceled]").unwrap().status,
+            ExtendedStatus::Cancelled
+        );
     }
 
     #[test]
     fn test_deprecated_status() {
-        assert_eq!(extract_status("[Deprecated]").unwrap().status, ExtendedStatus::Deprecated);
+        assert_eq!(
+            extract_status("[Deprecated]").unwrap().status,
+            ExtendedStatus::Deprecated
+        );
     }
 
     #[test]
     fn test_approved_status() {
-        assert_eq!(extract_status("[Approved]").unwrap().status, ExtendedStatus::Approved);
+        assert_eq!(
+            extract_status("[Approved]").unwrap().status,
+            ExtendedStatus::Approved
+        );
     }
 
     #[test]

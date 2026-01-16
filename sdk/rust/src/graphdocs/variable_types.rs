@@ -142,8 +142,12 @@ pub mod common_enums {
     pub const ACCESSIBILITY: &[&str] = &["None", "WCAG AA", "WCAG AAA"];
 
     /// Target platforms
-    pub const TARGET_PLATFORM: &[&str] =
-        &["Web Responsive", "Mobile Only", "Desktop Only", "Cross-Platform"];
+    pub const TARGET_PLATFORM: &[&str] = &[
+        "Web Responsive",
+        "Mobile Only",
+        "Desktop Only",
+        "Cross-Platform",
+    ];
 
     /// Repository structure
     pub const REPOSITORY_STRUCTURE: &[&str] = &["Monorepo", "Polyrepo", "Multi-repo"];
@@ -316,7 +320,10 @@ pub fn infer_variable_type(name: &str) -> ParsedVariable {
 
 /// Convert raw variable names to typed ParsedVariables
 pub fn variables_to_typed(names: Vec<String>) -> Vec<ParsedVariable> {
-    names.into_iter().map(|name| infer_variable_type(&name)).collect()
+    names
+        .into_iter()
+        .map(|name| infer_variable_type(&name))
+        .collect()
 }
 
 /// YAML frontmatter with variable type hints
@@ -628,16 +635,13 @@ Status: {{custom_status}}
         assert_eq!(merged[0].var_type, VariableType::Number);
         assert_eq!(merged[0].default_value, Some(serde_json::json!(42)));
         assert!(merged[0].required);
-        assert_eq!(
-            merged[0].description,
-            Some("A custom number".to_string())
-        );
+        assert_eq!(merged[0].description, Some("A custom number".to_string()));
     }
 
     #[test]
     fn test_merge_frontmatter_preserves_inferred_when_not_overridden() {
         let inferred = vec![
-            infer_variable_type("elicit"), // known bool
+            infer_variable_type("elicit"),  // known bool
             infer_variable_type("unknown"), // unknown string
         ];
 

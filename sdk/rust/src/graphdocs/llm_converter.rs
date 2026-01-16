@@ -219,10 +219,7 @@ Return ONLY valid JSON matching this schema:
         if let Some(start) = response.find("```") {
             let after_start = &response[start + 3..];
             // Skip language identifier if present
-            let json_start = after_start
-                .find('\n')
-                .map(|i| i + 1)
-                .unwrap_or(0);
+            let json_start = after_start.find('\n').map(|i| i + 1).unwrap_or(0);
             let after_lang = &after_start[json_start..];
             if let Some(end) = after_lang.find("```") {
                 let potential_json = after_lang[..end].trim();
@@ -414,7 +411,8 @@ mod tests {
         ```
         "#;
 
-        let converter = LLMConverter::new(Box::new(MockLLMClient::new(mock_response)), "test".into());
+        let converter =
+            LLMConverter::new(Box::new(MockLLMClient::new(mock_response)), "test".into());
         let doc = converter.convert("# Test").await.unwrap();
 
         assert_eq!(doc.title, Some("Test Document".to_string()));
@@ -674,15 +672,69 @@ That's the result."#;
             title: "Test".into(),
             description: None,
             sections: vec![
-                LLMSection { id: "s1".into(), section_type: "heading".into(), level: Some(1), content: "H".into(), order: 0 },
-                LLMSection { id: "s2".into(), section_type: "paragraph".into(), level: None, content: "P".into(), order: 1 },
-                LLMSection { id: "s3".into(), section_type: "list".into(), level: None, content: "L".into(), order: 2 },
-                LLMSection { id: "s4".into(), section_type: "code".into(), level: None, content: "C".into(), order: 3 },
-                LLMSection { id: "s5".into(), section_type: "table".into(), level: None, content: "T".into(), order: 4 },
-                LLMSection { id: "s6".into(), section_type: "blockquote".into(), level: None, content: "B".into(), order: 5 },
-                LLMSection { id: "s7".into(), section_type: "hr".into(), level: None, content: "---".into(), order: 6 },
-                LLMSection { id: "s8".into(), section_type: "checklist".into(), level: None, content: "CL".into(), order: 7 },
-                LLMSection { id: "s9".into(), section_type: "choice".into(), level: None, content: "CH".into(), order: 8 },
+                LLMSection {
+                    id: "s1".into(),
+                    section_type: "heading".into(),
+                    level: Some(1),
+                    content: "H".into(),
+                    order: 0,
+                },
+                LLMSection {
+                    id: "s2".into(),
+                    section_type: "paragraph".into(),
+                    level: None,
+                    content: "P".into(),
+                    order: 1,
+                },
+                LLMSection {
+                    id: "s3".into(),
+                    section_type: "list".into(),
+                    level: None,
+                    content: "L".into(),
+                    order: 2,
+                },
+                LLMSection {
+                    id: "s4".into(),
+                    section_type: "code".into(),
+                    level: None,
+                    content: "C".into(),
+                    order: 3,
+                },
+                LLMSection {
+                    id: "s5".into(),
+                    section_type: "table".into(),
+                    level: None,
+                    content: "T".into(),
+                    order: 4,
+                },
+                LLMSection {
+                    id: "s6".into(),
+                    section_type: "blockquote".into(),
+                    level: None,
+                    content: "B".into(),
+                    order: 5,
+                },
+                LLMSection {
+                    id: "s7".into(),
+                    section_type: "hr".into(),
+                    level: None,
+                    content: "---".into(),
+                    order: 6,
+                },
+                LLMSection {
+                    id: "s8".into(),
+                    section_type: "checklist".into(),
+                    level: None,
+                    content: "CL".into(),
+                    order: 7,
+                },
+                LLMSection {
+                    id: "s9".into(),
+                    section_type: "choice".into(),
+                    level: None,
+                    content: "CH".into(),
+                    order: 8,
+                },
             ],
             variables: vec![],
             relationships: vec![],
@@ -710,11 +762,36 @@ That's the result."#;
             description: None,
             sections: vec![],
             variables: vec![
-                LLMVariable { name: "s".into(), default_value: None, description: None, var_type: "string".into() },
-                LLMVariable { name: "n".into(), default_value: None, description: None, var_type: "number".into() },
-                LLMVariable { name: "b".into(), default_value: None, description: None, var_type: "boolean".into() },
-                LLMVariable { name: "a".into(), default_value: None, description: None, var_type: "array".into() },
-                LLMVariable { name: "o".into(), default_value: None, description: None, var_type: "object".into() },
+                LLMVariable {
+                    name: "s".into(),
+                    default_value: None,
+                    description: None,
+                    var_type: "string".into(),
+                },
+                LLMVariable {
+                    name: "n".into(),
+                    default_value: None,
+                    description: None,
+                    var_type: "number".into(),
+                },
+                LLMVariable {
+                    name: "b".into(),
+                    default_value: None,
+                    description: None,
+                    var_type: "boolean".into(),
+                },
+                LLMVariable {
+                    name: "a".into(),
+                    default_value: None,
+                    description: None,
+                    var_type: "array".into(),
+                },
+                LLMVariable {
+                    name: "o".into(),
+                    default_value: None,
+                    description: None,
+                    var_type: "object".into(),
+                },
             ],
             relationships: vec![],
         };
@@ -742,7 +819,11 @@ That's the result."#;
             };
 
             let converter = LLMConverter::new(Box::new(MockLLMClient::new("")), "".into());
-            assert!(converter.validate_schema(&schema).is_ok(), "Level {} should be valid", level);
+            assert!(
+                converter.validate_schema(&schema).is_ok(),
+                "Level {} should be valid",
+                level
+            );
         }
 
         // Invalid level 0
@@ -789,7 +870,10 @@ That's the result."#;
         assert_eq!(extract_variables("Hello {{name}}!"), vec!["name"]);
         assert_eq!(extract_variables("{{a}} and {{b}}"), vec!["a", "b"]);
         assert_eq!(extract_variables("No variables here"), Vec::<String>::new());
-        assert_eq!(extract_variables("{{snake_case_var}}"), vec!["snake_case_var"]);
+        assert_eq!(
+            extract_variables("{{snake_case_var}}"),
+            vec!["snake_case_var"]
+        );
     }
 
     #[tokio::test]
@@ -815,8 +899,12 @@ That's the result."#;
         }
         ```"#;
 
-        let converter = LLMConverter::new(Box::new(MockLLMClient::new(mock_response)), "gpt-4".into());
-        let doc = converter.convert("# Project README\n\nWelcome!").await.unwrap();
+        let converter =
+            LLMConverter::new(Box::new(MockLLMClient::new(mock_response)), "gpt-4".into());
+        let doc = converter
+            .convert("# Project README\n\nWelcome!")
+            .await
+            .unwrap();
 
         assert_eq!(doc.title, Some("Project README".to_string()));
         assert_eq!(doc.sections.len(), 4);

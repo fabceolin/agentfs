@@ -1,4 +1,4 @@
-use pulldown_cmark::{Event, Parser, Tag, HeadingLevel};
+use pulldown_cmark::{Event, HeadingLevel, Parser, Tag};
 use uuid::Uuid;
 
 /// Parsed section from Markdown
@@ -442,7 +442,9 @@ mod tests {
     #[test]
     fn test_extract_variables_from_content() {
         let parser = MarkdownParser::new();
-        let doc = parser.parse("Hello {{name}}, your order {{order_id}} is ready").unwrap();
+        let doc = parser
+            .parse("Hello {{name}}, your order {{order_id}} is ready")
+            .unwrap();
 
         assert!(doc.variables.contains(&"name".to_string()));
         assert!(doc.variables.contains(&"order_id".to_string()));

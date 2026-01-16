@@ -2,8 +2,8 @@
 //!
 //! Uses cosine similarity to find the closest known status for unknown variants.
 
-use anyhow::Result;
 use crate::graphdocs::normalizer::ExtendedStatus;
+use anyhow::Result;
 
 /// Known status phrases with pre-computed embeddings
 pub struct StatusEmbeddings {
@@ -46,7 +46,8 @@ impl StatusEmbeddings {
 
         for (phrase, status) in known_phrases {
             let embedding = self.embed_text(phrase).await?;
-            self.known_statuses.push((phrase.to_string(), embedding, status));
+            self.known_statuses
+                .push((phrase.to_string(), embedding, status));
         }
 
         Ok(())
@@ -54,7 +55,8 @@ impl StatusEmbeddings {
 
     /// Add a known status with its embedding
     pub fn add_known_status(&mut self, phrase: &str, embedding: Vec<f32>, status: ExtendedStatus) {
-        self.known_statuses.push((phrase.to_string(), embedding, status));
+        self.known_statuses
+            .push((phrase.to_string(), embedding, status));
     }
 
     /// Embed text using TEA CLI for embedding
@@ -261,10 +263,19 @@ mod tests {
 
         assert_eq!(embeddings.fallback_match("Done"), ExtendedStatus::Done);
         assert_eq!(embeddings.fallback_match("completed"), ExtendedStatus::Done);
-        assert_eq!(embeddings.fallback_match("In Progress"), ExtendedStatus::InProgress);
+        assert_eq!(
+            embeddings.fallback_match("In Progress"),
+            ExtendedStatus::InProgress
+        );
         assert_eq!(embeddings.fallback_match("WIP"), ExtendedStatus::InProgress);
-        assert_eq!(embeddings.fallback_match("Ready for Review"), ExtendedStatus::Review);
-        assert_eq!(embeddings.fallback_match("Approved"), ExtendedStatus::Approved);
+        assert_eq!(
+            embeddings.fallback_match("Ready for Review"),
+            ExtendedStatus::Review
+        );
+        assert_eq!(
+            embeddings.fallback_match("Approved"),
+            ExtendedStatus::Approved
+        );
         assert_eq!(embeddings.fallback_match("Unknown"), ExtendedStatus::Draft);
     }
 }

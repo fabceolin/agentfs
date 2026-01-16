@@ -187,14 +187,14 @@ pub async fn handle_import(fs: &DuckAgentFS, args: ImportArgs) -> Result<()> {
     }
 
     // Get connection and perform database operations
-    let conn = fs.pool.get_write_connection()?;
+    let conn = fs.get_write_connection()?;
 
     // Check if document already exists
     let exists: bool = conn
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM gd_documents WHERE id = ?)",
             [&doc_id],
-            |r| r.get(0),
+            |r: &duckdb::Row| -> duckdb::Result<bool> { r.get(0) },
         )
         .unwrap_or(false);
 
@@ -329,14 +329,16 @@ pub async fn handle_import_dir(fs: &DuckAgentFS, args: ImportDirArgs) -> Result<
 
 /// Handle the graphdocs export command
 pub async fn handle_export(fs: &DuckAgentFS, args: ExportArgs) -> Result<()> {
-    let conn = fs.pool.get_connection()?;
+    let conn = fs.get_connection()?;
 
     // Get document info
     let (title, base_template): (String, Option<String>) = conn
         .query_row(
             "SELECT title, base_template FROM gd_documents WHERE id = ?",
             [&args.doc_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row: &duckdb::Row| -> duckdb::Result<(String, Option<String>)> {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            },
         )
         .with_context(|| format!("Document '{}' not found", args.doc_id))?;
 
@@ -348,15 +350,15 @@ pub async fn handle_export(fs: &DuckAgentFS, args: ExportArgs) -> Result<()> {
            ORDER BY order_idx"#,
     )?;
 
-    let sections = stmt
-        .query_map([&args.doc_id], |row| {
+    let sections: Vec<(String, Option<i64>, String)> = stmt
+        .query_map([&args.doc_id], |row: &duckdb::Row| -> duckdb::Result<(String, Option<i64>, String)> {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, Option<i64>>(1)?,
                 row.get::<_, String>(2)?,
             ))
         })?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
+        .collect::<duckdb::Result<Vec<(String, Option<i64>, String)>>>()?;
 
     // Get variables for substitution
     let mut var_stmt = conn.prepare(
@@ -364,10 +366,10 @@ pub async fn handle_export(fs: &DuckAgentFS, args: ExportArgs) -> Result<()> {
     )?;
 
     let variables: std::collections::HashMap<String, String> = var_stmt
-        .query_map([&args.doc_id], |row| {
+        .query_map([&args.doc_id], |row: &duckdb::Row| -> duckdb::Result<(String, String)> {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?
-        .filter_map(|r| r.ok())
+        .filter_map(|r: duckdb::Result<(String, String)>| r.ok())
         .collect();
 
     // Build markdown
@@ -378,13 +380,16 @@ pub async fn handle_export(fs: &DuckAgentFS, args: ExportArgs) -> Result<()> {
         markdown.push_str(&format!("<!-- Base template: {} -->\n\n", template));
     }
 
-    for (section_type, level, content) in sections {
+    for (section_type, level, content) in sections.into_iter() {
+        let section_type: String = section_type;
+        let level: Option<i64> = level;
+        let content: String = content;
         let rendered_content = substitute_variables(&content, &variables);
 
         match section_type.as_str() {
             "heading" => {
-                let level = level.unwrap_or(1) as usize;
-                let prefix = "#".repeat(level);
+                let heading_level = level.unwrap_or(1) as usize;
+                let prefix = "#".repeat(heading_level);
                 markdown.push_str(&format!("{} {}\n\n", prefix, rendered_content));
             }
             "paragraph" => {
@@ -564,7 +569,7 @@ mod tests {
         handle_import(&fs, args).await.unwrap();
 
         // Verify
-        let conn = fs.pool.get_connection().unwrap();
+        let conn = fs.get_connection().unwrap();
         let count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM gd_sections WHERE document_id = 'test-doc'",
@@ -594,7 +599,7 @@ mod tests {
         handle_import(&fs, args).await.unwrap();
 
         // Verify nothing was inserted
-        let conn = fs.pool.get_connection().unwrap();
+        let conn = fs.get_connection().unwrap();
         let exists: bool = conn
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM gd_documents WHERE id = 'test-doc')",
@@ -611,7 +616,7 @@ mod tests {
         let fs = setup_test_fs().await;
 
         // Create template first
-        let conn = fs.pool.get_write_connection().unwrap();
+        let conn = fs.get_write_connection().unwrap();
         conn.execute(
             "INSERT INTO gd_documents (id, title) VALUES ('template', 'Template')",
             [],
@@ -634,7 +639,7 @@ mod tests {
         handle_import(&fs, args).await.unwrap();
 
         // Verify inheritance
-        let conn = fs.pool.get_connection().unwrap();
+        let conn = fs.get_connection().unwrap();
         let base: Option<String> = conn
             .query_row(
                 "SELECT base_template FROM gd_documents WHERE id = 'child'",
@@ -664,7 +669,7 @@ mod tests {
         handle_import(&fs, args).await.unwrap();
 
         // Verify variables were extracted
-        let conn = fs.pool.get_connection().unwrap();
+        let conn = fs.get_connection().unwrap();
         let count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM gd_variables WHERE document_id = 'var-doc'",
@@ -681,7 +686,7 @@ mod tests {
         let fs = setup_test_fs().await;
 
         // Create a document with sections
-        let conn = fs.pool.get_write_connection().unwrap();
+        let conn = fs.get_write_connection().unwrap();
         conn.execute(
             "INSERT INTO gd_documents (id, title) VALUES ('export-test', 'Export Test')",
             [],

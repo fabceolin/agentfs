@@ -35,7 +35,7 @@ use super::{
     DEFAULT_FILE_MODE, S_IFDIR, S_IFLNK, S_IFMT, S_IFREG,
 };
 
-use duckdb::{Connection, params};
+use duckdb::{params, Connection};
 
 const ROOT_INO: i64 = 1;
 const DEFAULT_CHUNK_SIZE: usize = 4096;
@@ -277,6 +277,20 @@ impl DuckAgentFS {
         Ok(fs)
     }
 
+    /// Get a connection for read operations.
+    ///
+    /// Returns a guard to the connection. Use within spawn_blocking for async.
+    pub fn get_connection(&self) -> Result<std::sync::MutexGuard<'_, Connection>> {
+        self.pool.get_connection()
+    }
+
+    /// Get a connection for write operations.
+    ///
+    /// Same as get_connection since DuckDB uses single-writer semantics.
+    pub fn get_write_connection(&self) -> Result<std::sync::MutexGuard<'_, Connection>> {
+        self.pool.get_write_connection()
+    }
+
     /// Initialize the database schema.
     async fn init_schema(&self) -> Result<()> {
         let conn = self.pool.get_write_connection()?;
@@ -486,10 +500,9 @@ impl DuckAgentFS {
         );
 
         match result {
-            Ok(data) => Ok(Some(
-                String::from_utf8(data)
-                    .map_err(|e| Error::Custom(format!("Invalid symlink target: {}", e)))?,
-            )),
+            Ok(data) => Ok(Some(String::from_utf8(data).map_err(|e| {
+                Error::Custom(format!("Invalid symlink target: {}", e))
+            })?)),
             Err(duckdb::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(Error::Custom(format!("Failed to read symlink: {}", e))),
         }
@@ -596,11 +609,7 @@ impl DuckAgentFS {
     /// # Returns
     ///
     /// Vector of (path, similarity_score, preview) tuples.
-    pub async fn search(
-        &self,
-        query: &str,
-        limit: usize,
-    ) -> Result<Vec<(String, f32, String)>> {
+    pub async fn search(&self, query: &str, limit: usize) -> Result<Vec<(String, f32, String)>> {
         if !self.config.enable_vss {
             return Err(Error::Custom("VSS not enabled".into()));
         }
@@ -829,7 +838,8 @@ impl FileSystem for DuckAgentFS {
 
         // Update embedding if VSS enabled (outside spawn_blocking since it's async)
         if self.config.enable_vss {
-            self.update_embedding_async(result, &data_for_embedding).await?;
+            self.update_embedding_async(result, &data_for_embedding)
+                .await?;
         }
 
         Ok(())
@@ -967,8 +977,8 @@ impl FileSystem for DuckAgentFS {
                 .ok_or(Error::Fs(FsError::NotFound))?;
 
             // Check parent is a directory
-            let parent_stats = Self::stat_inode_sync(&conn, parent_ino)?
-                .ok_or(Error::Fs(FsError::NotFound))?;
+            let parent_stats =
+                Self::stat_inode_sync(&conn, parent_ino)?.ok_or(Error::Fs(FsError::NotFound))?;
 
             if !parent_stats.is_directory() {
                 return Err(Error::Fs(FsError::NotADirectory));
@@ -1068,8 +1078,7 @@ impl FileSystem for DuckAgentFS {
             let ino = Self::resolve_path_sync(&conn, &dentry_cache, &path, true)?
                 .ok_or(Error::Fs(FsError::NotFound))?;
 
-            let stats =
-                Self::stat_inode_sync(&conn, ino)?.ok_or(Error::Fs(FsError::NotFound))?;
+            let stats = Self::stat_inode_sync(&conn, ino)?.ok_or(Error::Fs(FsError::NotFound))?;
 
             // Preserve file type, update permissions
             let new_mode = (stats.mode & S_IFMT) | (mode & 0o7777);
@@ -1303,11 +1312,9 @@ impl FileSystem for DuckAgentFS {
             let conn = pool.get_connection()?;
 
             let inodes: i64 = conn
-                .query_row(
-                    "SELECT COUNT(DISTINCT inode) FROM fs_current",
-                    [],
-                    |row| row.get(0),
-                )
+                .query_row("SELECT COUNT(DISTINCT inode) FROM fs_current", [], |row| {
+                    row.get(0)
+                })
                 .unwrap_or(0);
 
             let bytes_used: i64 = conn
@@ -1339,8 +1346,7 @@ impl FileSystem for DuckAgentFS {
             let ino = Self::resolve_path_sync(&conn, &dentry_cache, &path, true)?
                 .ok_or(Error::Fs(FsError::NotFound))?;
 
-            let stats =
-                Self::stat_inode_sync(&conn, ino)?.ok_or(Error::Fs(FsError::NotFound))?;
+            let stats = Self::stat_inode_sync(&conn, ino)?.ok_or(Error::Fs(FsError::NotFound))?;
 
             if !stats.is_file() {
                 return Err(Error::Fs(FsError::IsADirectory));
@@ -1558,8 +1564,10 @@ impl DuckAgentFS {
                     "#,
                     params![
                         ino,
-                        serde_json::to_string(&embedding)
-                            .map_err(|e| Error::Custom(format!("Failed to serialize embedding: {}", e)))?,
+                        serde_json::to_string(&embedding).map_err(|e| Error::Custom(format!(
+                            "Failed to serialize embedding: {}",
+                            e
+                        )))?,
                         model_name,
                         text
                     ],
@@ -1769,8 +1777,7 @@ impl File for DuckAgentFSFile {
 
         tokio::task::spawn_blocking(move || {
             let conn = pool.get_connection()?;
-            DuckAgentFS::stat_inode_sync(&conn, ino)?
-                .ok_or(Error::Fs(FsError::NotFound))
+            DuckAgentFS::stat_inode_sync(&conn, ino)?.ok_or(Error::Fs(FsError::NotFound))
         })
         .await
         .map_err(|e| Error::Custom(format!("spawn_blocking join error: {}", e)))?
@@ -1912,7 +1919,9 @@ mod tests {
         };
 
         // Open should succeed and load schema
-        let fs = DuckAgentFS::open(config).await.expect("Failed to open DuckAgentFS");
+        let fs = DuckAgentFS::open(config)
+            .await
+            .expect("Failed to open DuckAgentFS");
 
         // Verify we can query the database - check root inode exists
         let conn = fs.pool.get_connection().expect("Failed to get connection");
@@ -1922,9 +1931,8 @@ mod tests {
             .prepare("SELECT inode, event_type, mode FROM fs_journal WHERE inode = 1")
             .expect("Failed to prepare statement");
 
-        let result: std::result::Result<(i64, String, u32), _> = stmt.query_row([], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-        });
+        let result: std::result::Result<(i64, String, u32), _> =
+            stmt.query_row([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)));
 
         let (inode, event_type, mode) = result.expect("Root inode should exist");
         assert_eq!(inode, 1, "Root inode should be 1");
@@ -1938,7 +1946,9 @@ mod tests {
         let pool = DuckConnectionPool::new(":memory:").expect("Failed to create pool");
 
         // Read connection should work
-        let conn = pool.get_connection().expect("Failed to get read connection");
+        let conn = pool
+            .get_connection()
+            .expect("Failed to get read connection");
         drop(conn);
 
         // Write connection should work
@@ -1960,7 +1970,9 @@ mod tests {
             ..Default::default()
         };
 
-        let fs = DuckAgentFS::open(config).await.expect("Failed to open DuckAgentFS");
+        let fs = DuckAgentFS::open(config)
+            .await
+            .expect("Failed to open DuckAgentFS");
         let conn = fs.pool.get_connection().expect("Failed to get connection");
 
         // Check that key tables exist by querying them
@@ -1976,8 +1988,7 @@ mod tests {
 
         for table in tables {
             let query = format!("SELECT COUNT(*) FROM {}", table);
-            let result: std::result::Result<i64, _> =
-                conn.query_row(&query, [], |row| row.get(0));
+            let result: std::result::Result<i64, _> = conn.query_row(&query, [], |row| row.get(0));
             assert!(result.is_ok(), "Table {} should exist", table);
         }
     }

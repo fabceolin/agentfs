@@ -2,21 +2,21 @@
 //!
 //! Validates documents against BMAD YAML templates or markdown templates.
 
-use std::path::{Path, PathBuf};
-use std::collections::HashMap;
-use glob::Pattern;
 use anyhow::Result;
+use glob::Pattern;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use super::parser::{MarkdownParser, ParsedDocument, ParsedSection, SectionType};
-use super::template_schema::{BmadTemplate, TemplateSection, SectionContentType};
+use super::template_schema::{BmadTemplate, SectionContentType, TemplateSection};
 
 /// Template detection patterns (YAML takes priority)
 pub const TEMPLATE_PATTERNS: &[&str] = &[
-    "*-tmpl.yaml",      // Priority 1: YAML templates
+    "*-tmpl.yaml", // Priority 1: YAML templates
     "*-template.yaml",
     "template.yaml",
     "_template.yaml",
-    "*-tmpl.md",        // Fallback: Markdown templates
+    "*-tmpl.md", // Fallback: Markdown templates
     "*-template.md",
     "template.md",
     "_template.md",
@@ -190,19 +190,15 @@ impl TemplateManager {
         };
 
         // Build map of document sections by normalized title
-        let doc_sections: HashMap<String, &ParsedSection> = doc.sections
+        let doc_sections: HashMap<String, &ParsedSection> = doc
+            .sections
             .iter()
             .filter(|s| s.section_type == SectionType::Heading)
             .map(|s| (s.content.to_lowercase(), s))
             .collect();
 
         // Check each template section (including nested)
-        self.check_sections_recursive(
-            &template.sections,
-            &doc_sections,
-            doc,
-            &mut result,
-        );
+        self.check_sections_recursive(&template.sections, &doc_sections, doc, &mut result);
 
         result
     }
@@ -220,21 +216,11 @@ impl TemplateManager {
             match doc_sections.get(&title_lower) {
                 Some(doc_section) => {
                     // Section exists - validate type
-                    self.validate_section_type(
-                        doc_section,
-                        template_section,
-                        doc,
-                        result,
-                    );
+                    self.validate_section_type(doc_section, template_section, doc, result);
 
                     // Validate choices if applicable
                     if template_section.section_type == SectionContentType::Choice {
-                        self.validate_choice(
-                            doc_section,
-                            template_section,
-                            doc,
-                            result,
-                        );
+                        self.validate_choice(doc_section, template_section, doc, result);
                     }
                 }
                 None => {
@@ -281,10 +267,18 @@ impl TemplateManager {
             SectionContentType::BulletList => {
                 // Check if the following section is a List (but not a checklist)
                 let is_list = following_section
-                    .map(|s| s.section_type == SectionType::List || s.section_type == SectionType::Checklist)
+                    .map(|s| {
+                        s.section_type == SectionType::List
+                            || s.section_type == SectionType::Checklist
+                    })
                     .unwrap_or(false);
-                let is_checklist = section_content.contains("[ ]") || section_content.contains("[x]") || section_content.contains("[X]");
-                (is_list && !is_checklist, "Content should be a bullet list (- item)")
+                let is_checklist = section_content.contains("[ ]")
+                    || section_content.contains("[x]")
+                    || section_content.contains("[X]");
+                (
+                    is_list && !is_checklist,
+                    "Content should be a bullet list (- item)",
+                )
             }
             SectionContentType::NumberedList => {
                 // Numbered lists are also parsed as List type
@@ -296,10 +290,18 @@ impl TemplateManager {
             SectionContentType::Checklist => {
                 // Checklists are List type with [ ] or [x] content
                 let is_list = following_section
-                    .map(|s| s.section_type == SectionType::List || s.section_type == SectionType::Checklist)
+                    .map(|s| {
+                        s.section_type == SectionType::List
+                            || s.section_type == SectionType::Checklist
+                    })
                     .unwrap_or(false);
-                let has_checkbox = section_content.contains("[ ]") || section_content.contains("[x]") || section_content.contains("[X]");
-                (is_list && has_checkbox, "Content should be a checklist (- [ ] item)")
+                let has_checkbox = section_content.contains("[ ]")
+                    || section_content.contains("[x]")
+                    || section_content.contains("[X]");
+                (
+                    is_list && has_checkbox,
+                    "Content should be a checklist (- [ ] item)",
+                )
             }
             SectionContentType::Table => (
                 section_content.contains('|') && section_content.contains("---"),
@@ -333,11 +335,15 @@ impl TemplateManager {
     }
 
     /// Get the first parsed section following a heading
-    fn get_following_section<'a>(&self, section: &ParsedSection, doc: &'a ParsedDocument) -> Option<&'a ParsedSection> {
+    fn get_following_section<'a>(
+        &self,
+        section: &ParsedSection,
+        doc: &'a ParsedDocument,
+    ) -> Option<&'a ParsedSection> {
         let section_idx = section.order_idx as usize;
-        doc.sections.iter().find(|s| {
-            s.order_idx as usize > section_idx && s.section_type != SectionType::Heading
-        })
+        doc.sections
+            .iter()
+            .find(|s| s.order_idx as usize > section_idx && s.section_type != SectionType::Heading)
     }
 
     fn validate_choice(
@@ -398,13 +404,15 @@ impl TemplateManager {
         template_path: &Path,
     ) -> MarkdownConformanceResult {
         // Get all heading titles from template and document
-        let template_headings: Vec<String> = template.sections
+        let template_headings: Vec<String> = template
+            .sections
             .iter()
             .filter(|s| s.section_type == SectionType::Heading && s.level != Some(1))
             .map(|s| s.content.to_lowercase())
             .collect();
 
-        let doc_headings: Vec<String> = doc.sections
+        let doc_headings: Vec<String> = doc
+            .sections
             .iter()
             .filter(|s| s.section_type == SectionType::Heading && s.level != Some(1))
             .map(|s| s.content.to_lowercase())
@@ -439,9 +447,7 @@ impl TemplateManager {
 
 /// Check if a path is a template file
 pub fn is_template_file(path: &Path) -> bool {
-    let filename = path.file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("");
+    let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
     TEMPLATE_PATTERNS.iter().any(|pattern| {
         Pattern::new(pattern)
@@ -536,9 +542,12 @@ mod tests {
     async fn test_template_detection() {
         let dir = tempdir().unwrap();
         let template_path = dir.path().join("story-tmpl.md");
-        tokio::fs::write(&template_path, "# {{story_title}}\n## Status\n## Description")
-            .await
-            .unwrap();
+        tokio::fs::write(
+            &template_path,
+            "# {{story_title}}\n## Status\n## Description",
+        )
+        .await
+        .unwrap();
 
         let detected = TemplateManager::detect_template(dir.path());
         assert!(detected.is_some());
@@ -571,7 +580,9 @@ mod tests {
     #[test]
     fn test_markdown_conformance_check() {
         let parser = MarkdownParser::new();
-        let template = parser.parse("# Template\n## Status\n## Description\n## Tasks").unwrap();
+        let template = parser
+            .parse("# Template\n## Status\n## Description\n## Tasks")
+            .unwrap();
         let doc = parser.parse("# My Doc\n## Status\n## Notes").unwrap();
 
         let manager = TemplateManager::default();
@@ -611,15 +622,23 @@ sections:
         let template = BmadTemplate::from_yaml(yaml).unwrap();
         let parser = MarkdownParser::new();
         // Document missing required "Description" section
-        let doc = parser.parse("# My Story\n## Status\nDraft\n## Notes\nSome notes").unwrap();
+        let doc = parser
+            .parse("# My Story\n## Status\nDraft\n## Notes\nSome notes")
+            .unwrap();
 
         let manager = TemplateManager::default();
         let result = manager.check_bmad_conformance(&doc, &template, Path::new("test.yaml"));
 
         assert!(!result.is_conformant);
-        assert!(result.missing_sections.iter().any(|s| s.section_id == "description" && s.is_required));
+        assert!(result
+            .missing_sections
+            .iter()
+            .any(|s| s.section_id == "description" && s.is_required));
         // Tasks is optional, so missing it shouldn't fail conformance by itself
-        assert!(result.missing_sections.iter().any(|s| s.section_id == "tasks" && !s.is_required));
+        assert!(result
+            .missing_sections
+            .iter()
+            .any(|s| s.section_id == "tasks" && !s.is_required));
     }
 
     #[test]
@@ -643,7 +662,9 @@ sections:
 "#;
         let template = BmadTemplate::from_yaml(yaml).unwrap();
         let parser = MarkdownParser::new();
-        let doc = parser.parse("# My Doc\n## Status\nDraft\n## Description\nSome text").unwrap();
+        let doc = parser
+            .parse("# My Doc\n## Status\nDraft\n## Description\nSome text")
+            .unwrap();
 
         let manager = TemplateManager::default();
         let result = manager.check_bmad_conformance(&doc, &template, Path::new("test.yaml"));
@@ -672,14 +693,18 @@ sections:
         let parser = MarkdownParser::new();
 
         // Document with valid checklist
-        let doc = parser.parse("# My Doc\n## Tasks\n\n- [ ] Task 1\n- [x] Task 2").unwrap();
+        let doc = parser
+            .parse("# My Doc\n## Tasks\n\n- [ ] Task 1\n- [x] Task 2")
+            .unwrap();
         let manager = TemplateManager::default();
         let result = manager.check_bmad_conformance(&doc, &template, Path::new("test.yaml"));
         assert!(result.is_conformant);
         assert!(result.type_violations.is_empty());
 
         // Document with bullet list instead of checklist
-        let doc2 = parser.parse("# My Doc\n## Tasks\n\n- Task 1\n- Task 2").unwrap();
+        let doc2 = parser
+            .parse("# My Doc\n## Tasks\n\n- Task 1\n- Task 2")
+            .unwrap();
         let result2 = manager.check_bmad_conformance(&doc2, &template, Path::new("test.yaml"));
         assert!(!result2.is_conformant);
         assert!(!result2.type_violations.is_empty());
@@ -705,7 +730,9 @@ sections:
         let parser = MarkdownParser::new();
 
         // Valid bullet list
-        let doc = parser.parse("# My Doc\n## Items\n\n- Item 1\n- Item 2").unwrap();
+        let doc = parser
+            .parse("# My Doc\n## Items\n\n- Item 1\n- Item 2")
+            .unwrap();
         let manager = TemplateManager::default();
         let result = manager.check_bmad_conformance(&doc, &template, Path::new("test.yaml"));
         assert!(result.type_violations.is_empty());
@@ -731,7 +758,9 @@ sections:
         let parser = MarkdownParser::new();
 
         // Valid numbered list
-        let doc = parser.parse("# My Doc\n## Steps\n\n1. First\n2. Second").unwrap();
+        let doc = parser
+            .parse("# My Doc\n## Steps\n\n1. First\n2. Second")
+            .unwrap();
         let manager = TemplateManager::default();
         let result = manager.check_bmad_conformance(&doc, &template, Path::new("test.yaml"));
         // The parser sees paragraphs, not numbered list content
@@ -775,10 +804,12 @@ sections:
     #[test]
     fn test_template_patterns_order() {
         // Verify YAML patterns come before MD patterns
-        let yaml_count = TEMPLATE_PATTERNS.iter()
+        let yaml_count = TEMPLATE_PATTERNS
+            .iter()
             .take_while(|p| p.ends_with(".yaml"))
             .count();
-        let md_start = TEMPLATE_PATTERNS.iter()
+        let md_start = TEMPLATE_PATTERNS
+            .iter()
             .position(|p| p.ends_with(".md"))
             .unwrap();
 

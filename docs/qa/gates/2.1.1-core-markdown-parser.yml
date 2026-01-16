@@ -1,0 +1,43 @@
+# Quality Gate: STORY-2.1.1
+schema: 1
+story: "2.1.1"
+story_title: "Core Markdown Parser"
+gate: PASS
+status_reason: "All 4 acceptance criteria met with comprehensive test coverage. Clean, idiomatic Rust implementation following coding standards."
+reviewer: "Quinn (Test Architect)"
+updated: "2026-01-16T00:00:00Z"
+
+waiver: { active: false }
+
+top_issues: []
+
+quality_score: 95
+
+evidence:
+  tests_reviewed: 13
+  risks_identified: 0
+  trace:
+    ac_covered: [1, 2, 3, 4]
+    ac_gaps: []
+
+nfr_validation:
+  security:
+    status: PASS
+    notes: "Pure parsing logic, no external input vulnerabilities"
+  performance:
+    status: PASS
+    notes: "Single-pass event-driven parsing, efficient"
+  reliability:
+    status: PASS
+    notes: "Graceful handling of edge cases, proper error types"
+  maintainability:
+    status: PASS
+    notes: "Good test coverage (13 tests), clear code structure"
+
+recommendations:
+  immediate: []
+  future:
+    - action: "Consider caching regex in extract_variables for performance"
+      refs: ["sdk/rust/src/graphdocs/parser.rs:338-343"]
+    - action: "Consider extracting flush_section parameters into a struct"
+      refs: ["sdk/rust/src/graphdocs/parser.rs:283-291"]

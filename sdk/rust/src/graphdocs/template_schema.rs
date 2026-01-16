@@ -2,9 +2,9 @@
 //!
 //! Parses BMAD YAML template format for document conformance checking.
 
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use anyhow::Result;
 
 /// BMAD Template Format
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -67,7 +67,7 @@ pub struct TemplateSection {
     #[serde(rename = "type", default)]
     pub section_type: SectionContentType,
     #[serde(default)]
-    pub required: Option<bool>,  // None = true (default required)
+    pub required: Option<bool>, // None = true (default required)
     #[serde(default)]
     pub choices: Option<Vec<String>>,
     #[serde(default)]
@@ -83,7 +83,7 @@ pub struct TemplateSection {
     #[serde(default)]
     pub elicit: Option<bool>,
     #[serde(default)]
-    pub sections: Option<Vec<TemplateSection>>,  // Nested sections
+    pub sections: Option<Vec<TemplateSection>>, // Nested sections
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq, Eq)]
@@ -152,7 +152,10 @@ impl BmadTemplate {
 
     /// Find section by ID (including nested)
     pub fn find_section_by_id(&self, id: &str) -> Option<&TemplateSection> {
-        fn find_recursive<'a>(sections: &'a [TemplateSection], id: &str) -> Option<&'a TemplateSection> {
+        fn find_recursive<'a>(
+            sections: &'a [TemplateSection],
+            id: &str,
+        ) -> Option<&'a TemplateSection> {
             for section in sections {
                 if section.id == id {
                     return Some(section);
@@ -171,7 +174,10 @@ impl BmadTemplate {
     /// Find section by title (case-insensitive, including nested)
     pub fn find_section_by_title(&self, title: &str) -> Option<&TemplateSection> {
         let lower_title = title.to_lowercase();
-        fn find_recursive<'a>(sections: &'a [TemplateSection], title: &str) -> Option<&'a TemplateSection> {
+        fn find_recursive<'a>(
+            sections: &'a [TemplateSection],
+            title: &str,
+        ) -> Option<&'a TemplateSection> {
             for section in sections {
                 if section.title.to_lowercase() == title {
                     return Some(section);
@@ -190,7 +196,9 @@ impl BmadTemplate {
 
 /// Validate a choice value against allowed choices (case-insensitive)
 pub fn validate_choice_value(value: &str, choices: &[impl AsRef<str>]) -> bool {
-    choices.iter().any(|c| c.as_ref().eq_ignore_ascii_case(value))
+    choices
+        .iter()
+        .any(|c| c.as_ref().eq_ignore_ascii_case(value))
 }
 
 #[cfg(test)]
@@ -226,12 +234,22 @@ sections:
         assert_eq!(template.template.id, "test-template");
         assert_eq!(template.template.version, "1.0");
         assert_eq!(template.sections.len(), 3);
-        assert_eq!(template.sections[0].section_type, SectionContentType::Choice);
+        assert_eq!(
+            template.sections[0].section_type,
+            SectionContentType::Choice
+        );
         assert_eq!(
             template.sections[0].choices,
-            Some(vec!["Draft".to_string(), "Approved".to_string(), "Done".to_string()])
+            Some(vec![
+                "Draft".to_string(),
+                "Approved".to_string(),
+                "Done".to_string()
+            ])
         );
-        assert_eq!(template.sections[2].section_type, SectionContentType::Checklist);
+        assert_eq!(
+            template.sections[2].section_type,
+            SectionContentType::Checklist
+        );
     }
 
     #[test]
@@ -273,12 +291,24 @@ sections:
     #[test]
     fn test_bmad_choice_validation() {
         // Valid choices
-        assert!(validate_choice_value("Done", &["Draft", "Approved", "Done"]));
-        assert!(validate_choice_value("done", &["Draft", "Approved", "Done"])); // case insensitive
-        assert!(validate_choice_value("DRAFT", &["Draft", "Approved", "Done"]));
+        assert!(validate_choice_value(
+            "Done",
+            &["Draft", "Approved", "Done"]
+        ));
+        assert!(validate_choice_value(
+            "done",
+            &["Draft", "Approved", "Done"]
+        )); // case insensitive
+        assert!(validate_choice_value(
+            "DRAFT",
+            &["Draft", "Approved", "Done"]
+        ));
 
         // Invalid choices
-        assert!(!validate_choice_value("InProgress", &["Draft", "Approved", "Done"]));
+        assert!(!validate_choice_value(
+            "InProgress",
+            &["Draft", "Approved", "Done"]
+        ));
         assert!(!validate_choice_value("", &["Draft", "Approved", "Done"]));
     }
 
@@ -385,7 +415,10 @@ sections:
 
     #[test]
     fn test_section_content_type_default() {
-        assert_eq!(SectionContentType::default(), SectionContentType::Paragraphs);
+        assert_eq!(
+            SectionContentType::default(),
+            SectionContentType::Paragraphs
+        );
     }
 
     #[test]
@@ -480,15 +513,36 @@ sections:
 "#;
         let template = BmadTemplate::from_yaml(yaml).unwrap();
 
-        assert_eq!(template.sections[0].section_type, SectionContentType::Paragraphs);
-        assert_eq!(template.sections[1].section_type, SectionContentType::Choice);
-        assert_eq!(template.sections[2].section_type, SectionContentType::BulletList);
-        assert_eq!(template.sections[3].section_type, SectionContentType::NumberedList);
-        assert_eq!(template.sections[4].section_type, SectionContentType::Checklist);
+        assert_eq!(
+            template.sections[0].section_type,
+            SectionContentType::Paragraphs
+        );
+        assert_eq!(
+            template.sections[1].section_type,
+            SectionContentType::Choice
+        );
+        assert_eq!(
+            template.sections[2].section_type,
+            SectionContentType::BulletList
+        );
+        assert_eq!(
+            template.sections[3].section_type,
+            SectionContentType::NumberedList
+        );
+        assert_eq!(
+            template.sections[4].section_type,
+            SectionContentType::Checklist
+        );
         assert_eq!(template.sections[5].section_type, SectionContentType::Table);
-        assert_eq!(template.sections[6].section_type, SectionContentType::TemplateText);
+        assert_eq!(
+            template.sections[6].section_type,
+            SectionContentType::TemplateText
+        );
         assert_eq!(template.sections[7].section_type, SectionContentType::Code);
-        assert_eq!(template.sections[8].section_type, SectionContentType::Mermaid);
+        assert_eq!(
+            template.sections[8].section_type,
+            SectionContentType::Mermaid
+        );
     }
 
     #[test]
@@ -512,7 +566,11 @@ sections:
 
         assert_eq!(
             template.sections[0].columns,
-            Some(vec!["Name".to_string(), "Value".to_string(), "Description".to_string()])
+            Some(vec![
+                "Name".to_string(),
+                "Value".to_string(),
+                "Description".to_string()
+            ])
         );
     }
 }

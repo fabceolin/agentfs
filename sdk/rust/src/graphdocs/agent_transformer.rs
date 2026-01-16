@@ -6,15 +6,15 @@
 //! - Document transformation to match templates
 //! - Batch processing of non-conforming documents
 
+use anyhow::{anyhow, Context, Result};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::process::Command;
-use anyhow::{Result, anyhow, Context};
-use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
 
-use super::parser::{MarkdownParser, ParsedDocument, SectionType};
 use super::normalizer::ExtendedStatus;
+use super::parser::{MarkdownParser, ParsedDocument, SectionType};
 
 /// Conformance result for transformation (simplified version for agent use)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,19 +74,18 @@ impl AgentTransformer {
 
         let mut cmd = Command::new(&self.tea_binary);
         cmd.arg("run")
-           .arg(&agent_path)
-           .arg("--input")
-           .arg(input.to_string())
-           .stdout(Stdio::piped())
-           .stderr(Stdio::piped());
+            .arg(&agent_path)
+            .arg("--input")
+            .arg(input.to_string())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
 
         // Set model path env var if specified
         if let Some(ref model_path) = self.model_path {
             cmd.env("GGUF_MODEL_PATH", model_path.display().to_string());
         }
 
-        let output = cmd.output().await
-            .context("Failed to execute TEA")?;
+        let output = cmd.output().await.context("Failed to execute TEA")?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -94,8 +93,7 @@ impl AgentTransformer {
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        serde_json::from_str(&stdout)
-            .context("Failed to parse TEA output as JSON")
+        serde_json::from_str(&stdout).context("Failed to parse TEA output as JSON")
     }
 
     /// Normalize status using TEA agent
@@ -104,7 +102,9 @@ impl AgentTransformer {
             "raw_status": raw_status
         });
 
-        let result = self.run_agent("document-conformance-agent.yaml", input).await?;
+        let result = self
+            .run_agent("document-conformance-agent.yaml", input)
+            .await?;
 
         let status_str = result
             .get("normalized_status")
@@ -137,7 +137,9 @@ impl AgentTransformer {
             }
         });
 
-        let result = self.run_agent("document-transformer-agent.yaml", input).await?;
+        let result = self
+            .run_agent("document-transformer-agent.yaml", input)
+            .await?;
 
         let content = result
             .get("output_content")
@@ -155,15 +157,19 @@ impl AgentTransformer {
 
     /// Convert ParsedDocument to JSON for agent input
     fn doc_to_json(&self, doc: &ParsedDocument) -> Value {
-        let sections: Vec<Value> = doc.sections.iter().map(|s| {
-            json!({
-                "id": s.id,
-                "section_type": s.section_type.as_str(),
-                "level": s.level,
-                "content": s.content,
-                "order_idx": s.order_idx,
+        let sections: Vec<Value> = doc
+            .sections
+            .iter()
+            .map(|s| {
+                json!({
+                    "id": s.id,
+                    "section_type": s.section_type.as_str(),
+                    "level": s.level,
+                    "content": s.content,
+                    "order_idx": s.order_idx,
+                })
             })
-        }).collect();
+            .collect();
 
         json!({
             "title": doc.title,
@@ -189,7 +195,8 @@ impl AgentTransformer {
         }
 
         // Build map of document sections by name
-        let doc_sections: HashMap<String, _> = doc.sections
+        let doc_sections: HashMap<String, _> = doc
+            .sections
             .iter()
             .filter(|s| s.section_type == SectionType::Heading)
             .map(|s| (s.content.to_lowercase(), s))
@@ -210,8 +217,10 @@ impl AgentTransformer {
                 output.push_str(&format!("{} {}\n\n", prefix, doc_section.content));
             } else {
                 // Add placeholder for missing section
-                output.push_str(&format!("{} {}\n\n<!-- TODO: Add content -->\n\n",
-                    prefix, template_section.content));
+                output.push_str(&format!(
+                    "{} {}\n\n<!-- TODO: Add content -->\n\n",
+                    prefix, template_section.content
+                ));
             }
         }
 
@@ -242,7 +251,9 @@ pub struct TransformResult {
 pub async fn batch_transform(args: &ConformArgs) -> Result<Vec<TransformResult>> {
     use super::conformance::{scan_directory, TemplateManager};
 
-    let agents_dir = args.agents_dir.clone()
+    let agents_dir = args
+        .agents_dir
+        .clone()
         .unwrap_or_else(|| PathBuf::from("agents"));
 
     let mut transformer = AgentTransformer::new(agents_dir);
@@ -277,23 +288,27 @@ pub async fn batch_transform(args: &ConformArgs) -> Result<Vec<TransformResult>>
                 file_path: conformance.file_path.clone(),
                 template_path: Some(conformance.template_path.clone()),
                 is_conformant: conformance.is_conformant,
-                missing_sections: conformance.missing_sections.iter()
+                missing_sections: conformance
+                    .missing_sections
+                    .iter()
                     .map(|s| s.section_title.clone())
                     .collect(),
                 extra_sections: vec![],
-                type_mismatches: conformance.type_violations.iter()
+                type_mismatches: conformance
+                    .type_violations
+                    .iter()
                     .map(|v| v.section_title.clone())
                     .collect(),
-                suggestions: conformance.suggestions.iter()
+                suggestions: conformance
+                    .suggestions
+                    .iter()
                     .map(|s| s.description.clone())
                     .collect(),
             };
 
-            let transformed = transformer.transform_to_template(
-                &doc,
-                &template,
-                &simple_conformance,
-            ).await?;
+            let transformed = transformer
+                .transform_to_template(&doc, &template, &simple_conformance)
+                .await?;
 
             if !args.dry_run {
                 tokio::fs::write(&conformance.file_path, &transformed).await?;
@@ -304,7 +319,11 @@ pub async fn batch_transform(args: &ConformArgs) -> Result<Vec<TransformResult>>
                 original_issues: conformance.suggestions.len(),
                 transformed: true,
                 dry_run: args.dry_run,
-                new_content: if args.dry_run { Some(transformed) } else { None },
+                new_content: if args.dry_run {
+                    Some(transformed)
+                } else {
+                    None
+                },
             });
         }
     }
@@ -325,9 +344,12 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires TEA + model
+    #[ignore] // Requires TEA with llm-local feature + GGUF model
     async fn test_normalize_status_agent() {
-        let transformer = AgentTransformer::new(PathBuf::from("agents"));
+        // Resolve agents dir from project root (sdk/rust -> ../../agents)
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let agents_dir = manifest_dir.join("../../agents").canonicalize().unwrap();
+        let transformer = AgentTransformer::new(agents_dir);
         let status = transformer.normalize_status("[**Done**]").await.unwrap();
         assert_eq!(status, ExtendedStatus::Done);
     }
@@ -335,8 +357,12 @@ mod tests {
     #[test]
     fn test_rule_based_transform() {
         let transformer = AgentTransformer::new(PathBuf::from("agents"));
-        let template = MarkdownParser::new().parse("# Template\n## Status\n## Description").unwrap();
-        let doc = MarkdownParser::new().parse("# My Doc\n## Status\nDone").unwrap();
+        let template = MarkdownParser::new()
+            .parse("# Template\n## Status\n## Description")
+            .unwrap();
+        let doc = MarkdownParser::new()
+            .parse("# My Doc\n## Status\nDone")
+            .unwrap();
         let conformance = ConformanceResult {
             file_path: String::new(),
             template_path: None,
@@ -347,7 +373,9 @@ mod tests {
             suggestions: vec![],
         };
 
-        let result = transformer.transform_rule_based(&doc, &template, &conformance).unwrap();
+        let result = transformer
+            .transform_rule_based(&doc, &template, &conformance)
+            .unwrap();
         assert!(result.contains("## Description"));
         assert!(result.contains("<!-- TODO: Add content -->"));
     }
@@ -359,14 +387,15 @@ mod tests {
         // Create template
         tokio::fs::write(
             dir.path().join("story-tmpl.md"),
-            "# {{title}}\n## Status\n## Description"
-        ).await.unwrap();
+            "# {{title}}\n## Status\n## Description",
+        )
+        .await
+        .unwrap();
 
         // Create non-conforming doc
-        tokio::fs::write(
-            dir.path().join("story-1.md"),
-            "# Story 1\n## Status\nDone"
-        ).await.unwrap();
+        tokio::fs::write(dir.path().join("story-1.md"), "# Story 1\n## Status\nDone")
+            .await
+            .unwrap();
 
         let args = ConformArgs {
             dir: dir.path().to_path_buf(),
@@ -391,7 +420,10 @@ mod tests {
     fn test_agent_transformer_with_model_path() {
         let transformer = AgentTransformer::new(PathBuf::from("agents"))
             .with_model_path(PathBuf::from("/path/to/model.gguf"));
-        assert_eq!(transformer.model_path, Some(PathBuf::from("/path/to/model.gguf")));
+        assert_eq!(
+            transformer.model_path,
+            Some(PathBuf::from("/path/to/model.gguf"))
+        );
     }
 
     #[test]
@@ -448,8 +480,12 @@ mod tests {
     #[test]
     fn test_rule_based_transform_with_title() {
         let transformer = AgentTransformer::new(PathBuf::from("agents"));
-        let template = MarkdownParser::new().parse("# Template\n## Section1\n## Section2").unwrap();
-        let doc = MarkdownParser::new().parse("# My Document\n## Section1\nContent here").unwrap();
+        let template = MarkdownParser::new()
+            .parse("# Template\n## Section1\n## Section2")
+            .unwrap();
+        let doc = MarkdownParser::new()
+            .parse("# My Document\n## Section1\nContent here")
+            .unwrap();
         let conformance = ConformanceResult {
             file_path: String::new(),
             template_path: None,
@@ -460,7 +496,9 @@ mod tests {
             suggestions: vec![],
         };
 
-        let result = transformer.transform_rule_based(&doc, &template, &conformance).unwrap();
+        let result = transformer
+            .transform_rule_based(&doc, &template, &conformance)
+            .unwrap();
         assert!(result.starts_with("# My Document"));
         assert!(result.contains("## Section1"));
         assert!(result.contains("## Section2"));
@@ -482,7 +520,9 @@ mod tests {
             suggestions: vec![],
         };
 
-        let result = transformer.transform_rule_based(&doc, &template, &conformance).unwrap();
+        let result = transformer
+            .transform_rule_based(&doc, &template, &conformance)
+            .unwrap();
         assert!(result.contains("## Status"));
         assert!(result.contains("## Tasks"));
     }
