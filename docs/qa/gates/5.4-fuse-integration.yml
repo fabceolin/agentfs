@@ -1,47 +1,84 @@
 # Quality Gate Decision
-# STORY-5.4: FUSE Integration
+# STORY-5.4: FUSE Integration (Phase 1 + Phase 2)
 schema: 1
 story: "5.4"
 story_title: "FUSE Integration"
 gate: PASS
-status_reason: "All acceptance criteria met. Clean implementation integrating HandlerRegistry into FUSE layer with proper async patterns, error handling, and unit tests."
+status_reason: "All Phase 1 (AC1-AC5) and Phase 2 (AC6-AC15) acceptance criteria met. Clean implementation with 82 passing tests including 14 new Phase 2 unit tests. StubTemplateRenderer is appropriate placeholder pending STORY-2.1.5."
 reviewer: "Quinn (Test Architect)"
-updated: "2026-01-15T12:00:00Z"
+updated: "2026-01-16T14:00:00Z"
 
 waiver: { active: false }
 
-top_issues: []
+top_issues:
+  - id: "TECH-001"
+    severity: low
+    finding: "StubTemplateRenderer does not enforce render timeout"
+    suggested_action: "Implement timeout when replacing with real TemplateProcessor in STORY-2.1.5"
+    suggested_owner: dev
+  - id: "TECH-002"
+    severity: low
+    finding: "xattr cache is in-memory only (won't persist across unmount)"
+    suggested_action: "Consider persisting to database for cross-session consistency if needed"
+    suggested_owner: dev
 
-quality_score: 90
-expires: "2026-01-29T00:00:00Z"
+quality_score: 85
+expires: "2026-01-30T00:00:00Z"
 
 evidence:
-  tests_reviewed: 6  # 3 existing + 3 new handler tests
-  risks_identified: 0
+  tests_reviewed: 82  # 68 existing + 14 new Phase 2 tests
+  risks_identified: 2
   trace:
-    ac_covered: [1, 2, 3, 4, 5]
+    ac_covered: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
     ac_gaps: []
 
 nfr_validation:
   security:
     status: PASS
-    notes: "No injection vectors introduced. Path validation maintained."
+    notes: "Write blocking provides safe default. Users must opt-in to raw mode. No path traversal vulnerabilities."
   performance:
     status: PASS
-    notes: "Handler chain iteration adds minimal overhead. DefaultHandler uses u32::MAX priority."
+    notes: "O(1) xattr lookup. Bitmask source inode detection. Minimal stub renderer overhead."
   reliability:
     status: PASS
-    notes: "Proper error propagation. Fallback to DefaultHandler ensures operations always resolve."
+    notes: "Graceful error handling for render failures. Safe defaults throughout."
   maintainability:
     status: PASS
-    notes: "Clean trait-based design. Well-documented code. MockFs duplication is minor tech debt."
+    notes: "Clean helper methods. Well-documented code. StubTemplateRenderer clearly marked for replacement."
 
 recommendations:
   immediate: []
   future:
-    - action: "Extract MockFs to shared test utility"
-      refs: ["cli/src/handler.rs"]
-    - action: "Add FUSE integration test with custom handler when build environment supports it"
+    - action: "Replace StubTemplateRenderer with real TemplateProcessor"
+      refs: ["cli/src/fuse.rs:104-155", "STORY-2.1.5"]
+    - action: "Implement timeout enforcement in template rendering"
+      refs: ["cli/src/fuse.rs:128-129"]
+    - action: "Consider persisting xattr cache to database"
+      refs: ["cli/src/fuse.rs:187"]
+    - action: "Add integration tests when FUSE mount available in test environment"
       refs: ["cli/tests/"]
-    - action: "Document lstat->stat behavioral change in getattr if intentional"
-      refs: ["cli/src/fuse.rs:154-170", "cli/src/handler.rs:446-450"]
+
+history:
+  - at: "2026-01-15T12:00:00Z"
+    gate: PASS
+    note: "Phase 1 review - Handler Registry integration complete"
+  - at: "2026-01-16T14:00:00Z"
+    gate: PASS
+    note: "Phase 2 review - xattr-controlled Tera rendering mode complete (AC6-AC15)"
+
+test_design:
+  ref: "docs/qa/assessments/5.4-test-design-20260116.md"
+  scenarios_total: 38
+  by_level:
+    unit: 16
+    integration: 18
+    e2e: 4
+  by_priority:
+    p0: 12
+    p1: 17
+    p2: 9
+  implemented:
+    unit: 14  # Phase 2 tests in fuse.rs
+    integration: 0  # Blocked by build environment
+    e2e: 0  # Blocked by build environment
+  coverage_note: "Integration and E2E tests blocked by FUSE mount requirements in build environment"

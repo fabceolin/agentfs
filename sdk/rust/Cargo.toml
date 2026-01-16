@@ -12,10 +12,17 @@ tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+serde_yaml = "0.9"
 libc = "0.2"
 thiserror = "1.0"
 lru = "0.12"
 tracing = "0.1"
+pulldown-cmark = "0.13"
+regex = "1"
+uuid = { version = "1", features = ["v4"] }
+glob = "0.3"
+anyhow = "1"
+reqwest = { version = "0.12", features = ["json"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # `aegis`'s C/NEON backend fails to compile with Apple clang on arm64 due to

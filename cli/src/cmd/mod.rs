@@ -1,5 +1,6 @@
 pub mod completions;
 pub mod fs;
+pub mod graphdocs;
 pub mod init;
 pub mod mcp_server;
 pub mod ps;

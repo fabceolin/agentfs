@@ -1,0 +1,120 @@
+# agents/document-conformance-agent.yaml
+# Prerequisite: TEA with llm-local feature
+# BUILD: cd /path/to/tea && cargo build --release --features llm-local
+# RUN: tea run document-conformance-agent.yaml --input '{"raw_status": "[**Done**]"}'
+
+name: document-conformance-fixer
+description: Normalizes status text using embeddings + local LLM fallback
+
+state_schema:
+  raw_status: str
+  normalized_status: str
+  match_score: float
+  needs_llm: bool
+
+settings:
+  llm:
+    backend: local
+    model_path: ~/.cache/tea/models/gemma-3n-E4B-it-Q4_K_M.gguf
+    n_ctx: 2048
+    n_gpu_layers: 0  # CPU only, use -1 for GPU
+
+config:
+  raise_exceptions: true
+
+nodes:
+  # Step 1: Generate embeddings for known statuses
+  - name: init_embeddings
+    uses: memory.embed
+    with:
+      texts:
+        - "Done"
+        - "Complete"
+        - "Finished"
+        - "In Progress"
+        - "Work in progress"
+        - "Draft"
+        - "Not started"
+        - "Review"
+        - "Dev Complete"
+        - "Approved"
+      model: model2vec
+    output: status_embeddings
+
+  # Step 2: Embed the raw status from document
+  - name: embed_raw_status
+    uses: memory.embed
+    with:
+      texts:
+        - "{{ state.raw_status }}"
+      model: model2vec
+    output: raw_embedding
+
+  # Step 3: Find closest matching status via vector search
+  - name: match_status
+    uses: memory.vector_search
+    with:
+      query_embedding: "{{ state.raw_embedding[0] }}"
+      embeddings: "{{ state.status_embeddings }}"
+      top_k: 1
+      threshold: 0.6
+    output: matched_status
+
+  # Step 4: Check if embedding match is good enough
+  - name: check_match
+    language: lua
+    run: |
+      local matched = state.matched_status or {}
+      local score = matched.score or 0
+      if score > 0.6 then
+        return { normalized_status = matched.text, needs_llm = false, match_score = score }
+      end
+      return { needs_llm = true, match_score = score }
+    goto:
+      - if: "state.needs_llm"
+        to: llm_classify
+      - to: format_output
+
+  # Step 5: Use local LLM for classification (fallback)
+  - name: llm_classify
+    uses: llm.chat
+    with:
+      backend: local
+      system: |
+        You are a status classifier. Classify the following status text into one of:
+        Draft, Approved, InProgress, Review, Done
+        Return ONLY the status word, nothing else.
+      prompt: "Status: {{ state.raw_status }}"
+      max_tokens: 16
+      temperature: 0.1
+    output: llm_response
+
+  # Step 6: Parse LLM response
+  - name: parse_llm_response
+    language: lua
+    run: |
+      local resp = state.llm_response or {}
+      local content = resp.content or "Draft"
+      -- Extract first word
+      local status = content:match("^%s*(%w+)") or "Draft"
+      -- Validate against known statuses
+      local valid = { Draft=true, Approved=true, InProgress=true, Review=true, Done=true }
+      if not valid[status] then
+        status = "Draft"
+      end
+      return { normalized_status = status }
+
+  # Step 7: Map to canonical status
+  - name: format_output
+    language: lua
+    run: |
+      local status_map = {
+        Done = "Done", Complete = "Done", Finished = "Done",
+        ["In Progress"] = "InProgress", ["Work in progress"] = "InProgress",
+        Draft = "Draft", ["Not started"] = "Draft",
+        Review = "Review", ["Dev Complete"] = "Review",
+        Approved = "Approved"
+      }
+      local raw = state.normalized_status or "Draft"
+      local normalized = status_map[raw] or raw
+      return { normalized_status = normalized }

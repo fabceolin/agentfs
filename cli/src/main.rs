@@ -1,5 +1,5 @@
 use agentfs::{
-    cmd::{self, completions::handle_completions},
+    cmd::{self, completions::handle_completions, graphdocs::GraphDocsCommand},
     get_runtime,
     parser::{Args, Command, FsCommand, PruneCommand, ServeCommand, SyncCommand},
 };
@@ -252,6 +252,36 @@ fn main() {
                     eprintln!("Error: {}", e);
                     std::process::exit(1);
                 }
+            }
+        },
+        Command::GraphDocs { id_or_path, command } => {
+            let rt = get_runtime();
+            if let Err(e) = rt.block_on(async {
+                match command {
+                    // Conform doesn't need DuckAgentFS - works directly with files
+                    GraphDocsCommand::Conform(args) => {
+                        cmd::graphdocs::handle_conform(args).await
+                    }
+                    // Other commands need DuckAgentFS
+                    _ => {
+                        let fs = cmd::graphdocs::open_duckagentfs(&id_or_path).await?;
+                        match command {
+                            GraphDocsCommand::Import(args) => {
+                                cmd::graphdocs::handle_import(&fs, args).await
+                            }
+                            GraphDocsCommand::ImportDir(args) => {
+                                cmd::graphdocs::handle_import_dir(&fs, args).await
+                            }
+                            GraphDocsCommand::Export(args) => {
+                                cmd::graphdocs::handle_export(&fs, args).await
+                            }
+                            GraphDocsCommand::Conform(_) => unreachable!(),
+                        }
+                    }
+                }
+            }) {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
             }
         },
     }

@@ -1,10 +1,14 @@
 use crate::cmd::completions::Shell;
+use crate::cmd::graphdocs::{GraphDocsArgs, GraphDocsCommand};
 use agentfs_sdk::agentfs_dir;
 use clap::{Parser, Subcommand};
 use clap_complete::{
     engine::ValueCompleter, ArgValueCompleter, CompletionCandidate, PathCompleter,
 };
 use std::path::{Path, PathBuf};
+
+// Re-export for use in main.rs
+pub use crate::cmd::graphdocs::{GraphDocsArgs as GraphDocsArgsExport, GraphDocsCommand as GraphDocsCommandExport};
 
 #[derive(Parser, Debug)]
 #[command(name = "agentfs")]
@@ -206,6 +210,15 @@ pub enum Command {
     Prune {
         #[command(subcommand)]
         command: PruneCommand,
+    },
+    /// GraphDocs - graph-based document management
+    GraphDocs {
+        /// Agent ID or database path
+        #[arg(value_name = "ID_OR_PATH", add = ArgValueCompleter::new(id_or_path_completer))]
+        id_or_path: String,
+
+        #[command(subcommand)]
+        command: GraphDocsCommand,
     },
 }
 

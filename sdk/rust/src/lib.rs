@@ -1,6 +1,7 @@
 pub mod connection_pool;
 pub mod error;
 pub mod filesystem;
+pub mod graphdocs;
 pub mod kvstore;
 pub mod toolcalls;
 

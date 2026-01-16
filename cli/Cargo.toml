@@ -41,6 +41,8 @@ base64 = "0.22"
 
 # NFS server for userspace filesystem (used by `agentfs run` and `agentfs nfs`)
 uuid = { version = "1", features = ["v4"] }
+glob = "0.3"
+duckdb = { version = "1.1", features = ["bundled"] }
 nfsserve = "0.10"
 async-trait = "0.1"
 
