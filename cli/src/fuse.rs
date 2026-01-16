@@ -5,13 +5,14 @@ use crate::fuser::{
     },
     FileAttr, FileType, Filesystem, KernelConfig, MountOption, ReplyAttr, ReplyCreate, ReplyData,
     ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite,
-    Request,
+    ReplyXattr, Request,
 };
+use crate::handler::HandlerRegistry;
 use agentfs_sdk::error::Error as SdkError;
 use agentfs_sdk::{BoxedFile, FileSystem, Stats};
 use parking_lot::Mutex;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     ffi::OsStr,
     path::{Path, PathBuf},
     sync::{
@@ -22,6 +23,22 @@ use std::{
 };
 use tokio::runtime::Runtime;
 use tracing;
+
+/// Extended attribute name for controlling raw/rendered mode.
+/// - `0` (default): rendered mode - read returns rendered content, write is blocked
+/// - `1`: raw mode - read returns raw template, write is allowed
+const XATTR_RAW_MODE: &str = "user.agentfs.raw";
+
+/// Suffix for accessing raw source of a file.
+/// e.g., `file.md.source` always returns raw content regardless of xattr.
+const SOURCE_SUFFIX: &str = ".source";
+
+/// Bit mask for identifying virtual "source" inodes that force raw mode.
+/// These are created when looking up `file.md.source` paths.
+const SOURCE_INODE_MASK: u64 = 0x4000_0000_0000_0000;
+
+/// Maximum time allowed for template rendering operations (AC14).
+const RENDER_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Convert an SDK error to an errno code for FUSE replies.
 ///
@@ -66,6 +83,77 @@ struct OpenFile {
     file: BoxedFile,
 }
 
+// ─────────────────────────────────────────────────────────────
+// Stub Template Renderer (Phase 2)
+// ─────────────────────────────────────────────────────────────
+
+/// Stub template renderer for Phase 2 of STORY-5.4.
+///
+/// This is a placeholder implementation that returns raw content unchanged.
+/// When STORY-2.1.5 (Cross-Document Relationships and Jinja2 Rendering) is
+/// complete, this should be replaced with the real `TemplateProcessor` that
+/// supports Tera/Jinja2 syntax and the `query()` function for DuckDB PGQ.
+///
+/// # TODO: Replace with TemplateProcessor from STORY-2.1.5
+///
+/// The real TemplateProcessor will:
+/// - Parse and render Tera/Jinja2 templates
+/// - Support `query()` function for DuckDB PGQ queries
+/// - Handle variable substitution and filters
+/// - Cache compiled templates for performance
+pub struct StubTemplateRenderer;
+
+impl StubTemplateRenderer {
+    /// Create a new stub renderer.
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// Render markdown content with timeout.
+    ///
+    /// # Stub Implementation
+    ///
+    /// Currently returns the raw content unchanged. When STORY-2.1.5 is
+    /// complete, this will render Tera templates with variable substitution.
+    ///
+    /// # Arguments
+    ///
+    /// * `content` - Raw markdown content (potentially with Tera syntax)
+    /// * `timeout` - Maximum time allowed for rendering
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(rendered)` - Rendered content (currently just raw content)
+    /// - `Err(message)` - Error message for graceful degradation (AC13)
+    pub fn render_with_timeout(&self, content: &[u8], timeout: Duration) -> Result<Vec<u8>, String> {
+        let _ = timeout; // Timeout will be used when real rendering is implemented
+
+        // Stub: Check for Tera syntax and add a warning comment if found
+        let content_str = String::from_utf8_lossy(content);
+
+        if content_str.contains("{{") || content_str.contains("{%") {
+            // Content appears to have Tera syntax - add a notice
+            // In production, this would be rendered by TemplateProcessor
+            let notice = format!(
+                "<!-- AgentFS Notice: Template rendering not yet available (STORY-2.1.5 pending). -->\n\
+                 <!-- Showing raw template content. Use 'setfattr -n user.agentfs.raw -v 1 <file>' for raw mode. -->\n\n"
+            );
+            let mut result = notice.into_bytes();
+            result.extend_from_slice(content);
+            return Ok(result);
+        }
+
+        // No Tera syntax detected - return content as-is
+        Ok(content.to_vec())
+    }
+
+    /// Check if content appears to contain Tera/Jinja2 template syntax.
+    pub fn has_template_syntax(content: &[u8]) -> bool {
+        let s = String::from_utf8_lossy(content);
+        s.contains("{{") || s.contains("{%") || s.contains("{#")
+    }
+}
+
 struct AgentFSFuse {
     fs: Arc<dyn FileSystem>,
     runtime: Runtime,
@@ -85,6 +173,27 @@ struct AgentFSFuse {
     /// to lookup `/mntpnt` from he under filesystem, which will hit our mountpoint again,
     /// causing a deadlock.
     mountpoint_path: String,
+    /// Handler registry for extensible file operations
+    handler_registry: HandlerRegistry,
+
+    // ─────────────────────────────────────────────────────────────
+    // Phase 2: Tera Rendering Mode (STORY-5.4)
+    // ─────────────────────────────────────────────────────────────
+
+    /// Extended attribute cache for `user.agentfs.raw` mode.
+    /// Maps inode -> raw_mode (true = raw mode, false = rendered mode).
+    /// Files not in this cache default to rendered mode (raw=false) for existing files,
+    /// but new files are added with raw=true (AC12).
+    xattr_raw_mode: Arc<Mutex<HashMap<u64, bool>>>,
+
+    /// Set of inodes accessed via `.source` suffix (virtual inodes).
+    /// These always use raw mode regardless of xattr settings.
+    /// The virtual inode is `real_ino | SOURCE_INODE_MASK`.
+    source_inodes: Arc<Mutex<HashSet<u64>>>,
+
+    /// Stub template renderer for Phase 2.
+    /// TODO: Replace with TemplateProcessor from STORY-2.1.5 when available.
+    template_renderer: Arc<StubTemplateRenderer>,
 }
 
 impl Filesystem for AgentFSFuse {
@@ -120,8 +229,62 @@ impl Filesystem for AgentFSFuse {
     ///
     /// Resolves `name` under the directory identified by `parent` inode, stats the
     /// resulting path, and caches the inode-to-path mapping on success.
+    ///
+    /// # Phase 2: .source Suffix Handling (AC10)
+    ///
+    /// If the name ends with `.source` (e.g., `file.md.source`), this method:
+    /// 1. Strips the suffix and looks up the real file (`file.md`)
+    /// 2. Creates a virtual inode that forces raw mode for all operations
+    /// 3. Returns the virtual inode with the same attributes
+    ///
+    /// This allows users to always access raw template content via `cat file.md.source`.
     fn lookup(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
         tracing::debug!("FUSE::lookup: parent={}, name={:?}", parent, name);
+
+        let name_str = name.to_string_lossy();
+
+        // Phase 2: Handle .source suffix for raw access (AC10)
+        if name_str.ends_with(SOURCE_SUFFIX) {
+            // Strip .source suffix and look up the real file
+            let real_name = &name_str[..name_str.len() - SOURCE_SUFFIX.len()];
+            tracing::debug!("FUSE::lookup: .source suffix detected, looking up real file: {}", real_name);
+
+            let Some(path) = self.lookup_path(parent, &std::ffi::OsString::from(real_name)) else {
+                reply.error(libc::ENOENT);
+                return;
+            };
+
+            let fs = self.fs.clone();
+            let (result, path) = self.runtime.block_on(async move {
+                let result = fs.lstat(&path).await;
+                (result, path)
+            });
+
+            match result {
+                Ok(Some(stats)) => {
+                    // Create virtual source inode that forces raw mode
+                    let source_ino = self.make_source_inode(stats.ino as u64);
+                    let mut attr = fillattr(&stats, self.uid, self.gid);
+                    attr.ino = source_ino;
+
+                    // Cache the path for the source inode
+                    self.add_path(source_ino, path.clone());
+                    // Also cache the real inode path if not already cached
+                    self.add_path(stats.ino as u64, path);
+
+                    // Track this as a source inode
+                    self.source_inodes.lock().insert(source_ino);
+
+                    tracing::debug!("FUSE::lookup: returning source inode {} for {}", source_ino, name_str);
+                    reply.entry(&TTL, &attr, 0);
+                }
+                Ok(None) => reply.error(libc::ENOENT),
+                Err(e) => reply.error(error_to_errno(&e)),
+            }
+            return;
+        }
+
+        // Normal lookup (no .source suffix)
         let Some(path) = self.lookup_path(parent, name) else {
             reply.error(libc::ENOENT);
             return;
@@ -146,18 +309,38 @@ impl Filesystem for AgentFSFuse {
     ///
     /// Returns metadata (size, permissions, timestamps, etc.) for the file or
     /// directory identified by `ino`. Root inode (1) is handled specially.
+    ///
+    /// Uses the handler registry to allow handlers to intercept getattr operations.
+    ///
+    /// # Phase 2: Source Inode Handling
+    ///
+    /// For virtual source inodes (created via `.source` suffix), this returns
+    /// the attributes of the underlying real file but with the virtual inode.
     fn getattr(&mut self, _req: &Request, ino: u64, _fh: Option<u64>, reply: ReplyAttr) {
         tracing::debug!("FUSE::getattr: ino={}", ino);
-        let Some(path) = self.get_path(ino) else {
+
+        // Phase 2: Handle source inodes
+        let real_ino = self.get_real_inode(ino);
+        let is_source = self.is_source_inode(ino);
+
+        let Some(path) = self.get_path(real_ino).or_else(|| self.get_path(ino)) else {
             reply.error(libc::ENOENT);
             return;
         };
 
-        let fs = self.fs.clone();
-        let result = self.runtime.block_on(async move { fs.lstat(&path).await });
+        let result = self
+            .runtime
+            .block_on(self.handler_registry.handle_getattr(&path));
 
         match result {
-            Ok(Some(stats)) => reply.attr(&TTL, &fillattr(&stats, self.uid, self.gid)),
+            Ok(Some(stats)) => {
+                let mut attr = fillattr(&stats, self.uid, self.gid);
+                // For source inodes, preserve the virtual inode number
+                if is_source {
+                    attr.ino = ino;
+                }
+                reply.attr(&TTL, &attr);
+            }
             Ok(None) => reply.error(libc::ENOENT),
             Err(e) => reply.error(error_to_errno(&e)),
         }
@@ -167,6 +350,8 @@ impl Filesystem for AgentFSFuse {
     ///
     /// Returns the path that the symlink points to. This is called by operations
     /// like `ls -l` to display symlink targets.
+    ///
+    /// Uses the handler registry to allow handlers to intercept readlink operations.
     fn readlink(&mut self, _req: &Request, ino: u64, reply: ReplyData) {
         tracing::debug!("FUSE::readlink: ino={}", ino);
         let Some(path) = self.get_path(ino) else {
@@ -174,10 +359,9 @@ impl Filesystem for AgentFSFuse {
             return;
         };
 
-        let fs = self.fs.clone();
         let result = self
             .runtime
-            .block_on(async move { fs.readlink(&path).await });
+            .block_on(self.handler_registry.handle_readlink(&path));
 
         match result {
             Ok(Some(target)) => reply.data(target.as_bytes()),
@@ -293,7 +477,8 @@ impl Filesystem for AgentFSFuse {
     /// Returns "." and ".." entries followed by the directory contents.
     /// Each entry's inode is cached for subsequent lookups.
     ///
-    /// Uses readdir_plus to fetch entries with stats in a single query,
+    /// Uses the handler registry to allow handlers to intercept readdir operations.
+    /// Falls back to readdir_plus to fetch entries with stats in a single query,
     /// avoiding N+1 database queries.
     fn readdir(
         &mut self,
@@ -309,11 +494,9 @@ impl Filesystem for AgentFSFuse {
             return;
         };
 
-        let fs = self.fs.clone();
-        let (entries_result, path) = self.runtime.block_on(async move {
-            let result = fs.readdir_plus(&path).await;
-            (result, path)
-        });
+        let entries_result = self
+            .runtime
+            .block_on(self.handler_registry.handle_readdir_plus(&path));
 
         let entries = match entries_result {
             Ok(Some(entries)) => entries,
@@ -394,7 +577,9 @@ impl Filesystem for AgentFSFuse {
     ///
     /// This is an optimized version that returns both directory entries and
     /// their attributes in a single call, reducing kernel/userspace round trips.
-    /// Uses readdir_plus to fetch entries with stats in a single database query.
+    ///
+    /// Uses the handler registry to allow handlers to intercept readdir operations.
+    /// Falls back to readdir_plus to fetch entries with stats in a single database query.
     fn readdirplus(
         &mut self,
         _req: &Request,
@@ -409,11 +594,9 @@ impl Filesystem for AgentFSFuse {
             return;
         };
 
-        let fs = self.fs.clone();
-        let (entries_result, path) = self.runtime.block_on(async move {
-            let result = fs.readdir_plus(&path).await;
-            (result, path)
-        });
+        let entries_result = self
+            .runtime
+            .block_on(self.handler_registry.handle_readdir_plus(&path));
 
         let entries = match entries_result {
             Ok(Some(entries)) => entries,
@@ -664,6 +847,12 @@ impl Filesystem for AgentFSFuse {
     ///
     /// Creates an empty file at `name` under `parent`, allocates a file handle,
     /// and returns both the file attributes and handle for immediate use.
+    ///
+    /// # Phase 2: New Files Default to Raw Mode (AC12)
+    ///
+    /// New `.md` files are automatically set to raw mode (`user.agentfs.raw=1`)
+    /// so they can be written to immediately. This allows users to create and
+    /// edit new template files without having to first set the xattr.
     fn create(
         &mut self,
         _req: &Request,
@@ -695,7 +884,17 @@ impl Filesystem for AgentFSFuse {
         match result {
             Ok((stats, file)) => {
                 let attr = fillattr(&stats, self.uid, self.gid);
-                self.add_path(attr.ino, path);
+                self.add_path(attr.ino, path.clone());
+
+                // Phase 2: New .md files default to raw mode (AC12)
+                if path.to_lowercase().ends_with(".md") {
+                    self.set_raw_mode(attr.ino, true);
+                    tracing::debug!(
+                        "FUSE::create: new .md file {} set to raw mode (ino={})",
+                        path,
+                        attr.ino
+                    );
+                }
 
                 let fh = self.alloc_fh();
                 self.open_files.lock().insert(fh, OpenFile { file });
@@ -966,9 +1165,18 @@ impl Filesystem for AgentFSFuse {
     /// Opens a file for reading or writing.
     ///
     /// Allocates a file handle and opens the file in the filesystem layer.
+    ///
+    /// # Phase 2: Source Inode Handling
+    ///
+    /// For virtual source inodes (created via `.source` suffix), this opens
+    /// the underlying real file but maintains the virtual inode association.
     fn open(&mut self, _req: &Request, ino: u64, _flags: i32, reply: ReplyOpen) {
         tracing::debug!("FUSE::open: ino={}", ino);
-        let Some(path) = self.get_path(ino) else {
+
+        // Phase 2: Handle source inodes
+        let real_ino = self.get_real_inode(ino);
+
+        let Some(path) = self.get_path(real_ino).or_else(|| self.get_path(ino)) else {
             reply.error(libc::ENOENT);
             return;
         };
@@ -989,11 +1197,24 @@ impl Filesystem for AgentFSFuse {
         }
     }
 
-    /// Reads data using the file handle.
+    /// Reads data using the file handle or handler registry.
+    ///
+    /// Uses the handler registry to allow handlers to intercept read operations
+    /// for virtual files. Falls back to file handle based reads for real files.
+    ///
+    /// # Phase 2: Tera Rendering Mode (AC6, AC7)
+    ///
+    /// For `.md` files in rendered mode (xattr `user.agentfs.raw=0` or default):
+    /// - Reads the full raw content
+    /// - Renders it through the template processor
+    /// - Returns the requested slice of the rendered content
+    ///
+    /// For `.md` files in raw mode (xattr `user.agentfs.raw=1` or `.source` suffix):
+    /// - Returns the raw content directly (no rendering)
     fn read(
         &mut self,
         _req: &Request,
-        _ino: u64,
+        ino: u64,
         fh: u64,
         offset: i64,
         size: u32,
@@ -1001,7 +1222,66 @@ impl Filesystem for AgentFSFuse {
         _lock: Option<u64>,
         reply: ReplyData,
     ) {
-        tracing::debug!("FUSE::read: fh={}, offset={}, size={}", fh, offset, size);
+        tracing::debug!(
+            "FUSE::read: ino={}, fh={}, offset={}, size={}",
+            ino,
+            fh,
+            offset,
+            size
+        );
+
+        // Get the real inode (in case of source inode)
+        let real_ino = self.get_real_inode(ino);
+
+        // Try path-based handler read first (allows virtual files from handlers)
+        if let Some(path) = self.get_path(real_ino).or_else(|| self.get_path(ino)) {
+            // Phase 2: Check if we should render this file
+            let should_render = self.should_render(&path, ino);
+
+            if should_render {
+                // Rendered mode: read full content, render, return requested slice
+                tracing::debug!("FUSE::read: rendering markdown file: {}", path);
+
+                let result = self
+                    .runtime
+                    .block_on(self.handler_registry.handle_read(&path, 0, u64::MAX));
+
+                match result {
+                    Ok(raw_data) => {
+                        // Render the content
+                        let rendered = self.render_content(&raw_data);
+
+                        // Return the requested slice
+                        let start = (offset as usize).min(rendered.len());
+                        let end = (start + size as usize).min(rendered.len());
+                        reply.data(&rendered[start..end]);
+                        return;
+                    }
+                    Err(e) => {
+                        reply.error(error_to_errno(&e));
+                        return;
+                    }
+                }
+            }
+
+            // Raw mode or non-markdown: read directly
+            let result = self
+                .runtime
+                .block_on(self.handler_registry.handle_read(&path, offset as u64, size as u64));
+
+            match result {
+                Ok(data) => {
+                    reply.data(&data);
+                    return;
+                }
+                Err(e) => {
+                    reply.error(error_to_errno(&e));
+                    return;
+                }
+            }
+        }
+
+        // Fall back to file handle based read
         let file = {
             let open_files = self.open_files.lock();
             let Some(open_file) = open_files.get(&fh) else {
@@ -1011,6 +1291,32 @@ impl Filesystem for AgentFSFuse {
             open_file.file.clone()
         };
 
+        // Check if we have a path for this file handle to determine rendering
+        let path_opt = self.get_path(real_ino).or_else(|| self.get_path(ino));
+
+        if let Some(ref path) = path_opt {
+            if self.should_render(path, ino) {
+                // Rendered mode: read full content, render, return requested slice
+                tracing::debug!("FUSE::read: rendering markdown file (via fh): {}", path);
+
+                let result = self
+                    .runtime
+                    .block_on(async move { file.pread(0, u64::MAX).await });
+
+                match result {
+                    Ok(raw_data) => {
+                        let rendered = self.render_content(&raw_data);
+                        let start = (offset as usize).min(rendered.len());
+                        let end = (start + size as usize).min(rendered.len());
+                        reply.data(&rendered[start..end]);
+                    }
+                    Err(e) => reply.error(error_to_errno(&e)),
+                }
+                return;
+            }
+        }
+
+        // Raw mode or non-markdown: read directly
         let result = self
             .runtime
             .block_on(async move { file.pread(offset as u64, size as u64).await });
@@ -1022,10 +1328,19 @@ impl Filesystem for AgentFSFuse {
     }
 
     /// Writes data using the file handle.
+    ///
+    /// # Phase 2: Write Blocking (AC8, AC9)
+    ///
+    /// For `.md` files in rendered mode (xattr `user.agentfs.raw=0` or default):
+    /// - Write is BLOCKED with EACCES
+    /// - User must switch to raw mode first: `setfattr -n user.agentfs.raw -v 1 <file>`
+    ///
+    /// For `.md` files in raw mode (xattr `user.agentfs.raw=1` or `.source` suffix):
+    /// - Write is ALLOWED normally
     fn write(
         &mut self,
         _req: &Request,
-        _ino: u64,
+        ino: u64,
         fh: u64,
         offset: i64,
         data: &[u8],
@@ -1035,11 +1350,26 @@ impl Filesystem for AgentFSFuse {
         reply: ReplyWrite,
     ) {
         tracing::debug!(
-            "FUSE::write: fh={}, offset={}, data_len={}",
+            "FUSE::write: ino={}, fh={}, offset={}, data_len={}",
+            ino,
             fh,
             offset,
             data.len()
         );
+
+        // Phase 2: Check if write is blocked (AC8, AC9)
+        let real_ino = self.get_real_inode(ino);
+        if let Some(path) = self.get_path(real_ino).or_else(|| self.get_path(ino)) {
+            if self.is_write_blocked(&path, ino) {
+                tracing::debug!(
+                    "FUSE::write: blocked write to rendered .md file: {} (set user.agentfs.raw=1 to enable writes)",
+                    path
+                );
+                reply.error(libc::EACCES);
+                return;
+            }
+        }
+
         let file = {
             let open_files = self.open_files.lock();
             let Some(open_file) = open_files.get(&fh) else {
@@ -1154,6 +1484,157 @@ impl Filesystem for AgentFSFuse {
             BLOCK_SIZE as u32, // frsize: fragment size
         );
     }
+
+    // ─────────────────────────────────────────────────────────────
+    // Phase 2: Extended Attributes (AC11)
+    // ─────────────────────────────────────────────────────────────
+
+    /// Set an extended attribute.
+    ///
+    /// Handles `user.agentfs.raw` for controlling raw/rendered mode on .md files.
+    /// - `0`: rendered mode (default) - read returns rendered content, write is blocked
+    /// - `1`: raw mode - read returns raw template, write is allowed
+    fn setxattr(
+        &mut self,
+        _req: &Request,
+        ino: u64,
+        name: &OsStr,
+        value: &[u8],
+        _flags: i32,
+        _position: u32,
+        reply: ReplyEmpty,
+    ) {
+        let name_str = name.to_string_lossy();
+        tracing::debug!("FUSE::setxattr: ino={}, name={}, value={:?}", ino, name_str, value);
+
+        // Handle user.agentfs.raw attribute
+        if name_str == XATTR_RAW_MODE {
+            // Parse value: "0" = rendered mode, "1" = raw mode
+            // Also accept single byte 0x00/0x01 or '0'/'1'
+            let raw_mode = if value.is_empty() {
+                false // Empty value = rendered mode
+            } else {
+                match value[0] {
+                    b'1' | 1 => true,  // Raw mode
+                    b'0' | 0 => false, // Rendered mode
+                    _ => {
+                        // Invalid value - treat as rendered mode
+                        tracing::warn!("FUSE::setxattr: invalid value for {}: {:?}", XATTR_RAW_MODE, value);
+                        false
+                    }
+                }
+            };
+
+            let real_ino = self.get_real_inode(ino);
+            self.set_raw_mode(real_ino, raw_mode);
+            tracing::debug!("FUSE::setxattr: set raw_mode={} for ino={}", raw_mode, real_ino);
+            reply.ok();
+            return;
+        }
+
+        // For other xattrs, return ENOTSUP (not supported)
+        // In the future, could delegate to the underlying filesystem
+        reply.error(libc::ENOTSUP);
+    }
+
+    /// Get an extended attribute.
+    ///
+    /// Handles `user.agentfs.raw` for querying raw/rendered mode.
+    /// - Returns "0" for rendered mode (default)
+    /// - Returns "1" for raw mode
+    fn getxattr(
+        &mut self,
+        _req: &Request,
+        ino: u64,
+        name: &OsStr,
+        size: u32,
+        reply: ReplyXattr,
+    ) {
+        let name_str = name.to_string_lossy();
+        tracing::debug!("FUSE::getxattr: ino={}, name={}, size={}", ino, name_str, size);
+
+        // Handle user.agentfs.raw attribute
+        if name_str == XATTR_RAW_MODE {
+            let real_ino = self.get_real_inode(ino);
+            let raw_mode = self.is_raw_mode(real_ino);
+            let value = if raw_mode { b"1" } else { b"0" };
+
+            if size == 0 {
+                // Return the size needed
+                reply.size(1);
+            } else if size >= 1 {
+                // Return the value
+                reply.data(value);
+            } else {
+                // Buffer too small
+                reply.error(libc::ERANGE);
+            }
+            return;
+        }
+
+        // For other xattrs, return ENODATA (no such attribute)
+        reply.error(libc::ENODATA);
+    }
+
+    /// List extended attribute names.
+    ///
+    /// Returns `user.agentfs.raw` for files that have the attribute set.
+    fn listxattr(&mut self, _req: &Request, ino: u64, size: u32, reply: ReplyXattr) {
+        tracing::debug!("FUSE::listxattr: ino={}, size={}", ino, size);
+
+        let real_ino = self.get_real_inode(ino);
+
+        // Check if this inode has the raw mode attribute set (explicitly)
+        let has_raw_attr = self.xattr_raw_mode.lock().contains_key(&real_ino);
+
+        if has_raw_attr {
+            // Return the attribute name (null-terminated)
+            let attr_name = format!("{}\0", XATTR_RAW_MODE);
+            let attr_bytes = attr_name.as_bytes();
+
+            if size == 0 {
+                // Return the size needed
+                reply.size(attr_bytes.len() as u32);
+            } else if size >= attr_bytes.len() as u32 {
+                // Return the list
+                reply.data(attr_bytes);
+            } else {
+                // Buffer too small
+                reply.error(libc::ERANGE);
+            }
+        } else {
+            // No xattrs set - return empty list
+            if size == 0 {
+                reply.size(0);
+            } else {
+                reply.data(&[]);
+            }
+        }
+    }
+
+    /// Remove an extended attribute.
+    fn removexattr(&mut self, _req: &Request, ino: u64, name: &OsStr, reply: ReplyEmpty) {
+        let name_str = name.to_string_lossy();
+        tracing::debug!("FUSE::removexattr: ino={}, name={}", ino, name_str);
+
+        // Handle user.agentfs.raw attribute
+        if name_str == XATTR_RAW_MODE {
+            let real_ino = self.get_real_inode(ino);
+            let mut xattr_cache = self.xattr_raw_mode.lock();
+
+            if xattr_cache.remove(&real_ino).is_some() {
+                tracing::debug!("FUSE::removexattr: removed raw_mode for ino={}", real_ino);
+                reply.ok();
+            } else {
+                // Attribute doesn't exist
+                reply.error(libc::ENODATA);
+            }
+            return;
+        }
+
+        // For other xattrs, return ENODATA
+        reply.error(libc::ENODATA);
+    }
 }
 
 impl AgentFSFuse {
@@ -1164,13 +1645,19 @@ impl AgentFSFuse {
     ///
     /// The uid and gid are used for all file ownership to avoid "dubious ownership"
     /// errors from tools like git that check file ownership.
+    ///
+    /// If `handler_registry` is `None`, a default registry is created that
+    /// delegates all operations to the filesystem.
     fn new(
         fs: Arc<dyn FileSystem>,
         runtime: Runtime,
         uid: u32,
         gid: u32,
         mountpoint_path: PathBuf,
+        handler_registry: Option<HandlerRegistry>,
     ) -> Self {
+        let handler_registry =
+            handler_registry.unwrap_or_else(|| HandlerRegistry::with_filesystem(fs.clone()));
         Self {
             fs,
             runtime,
@@ -1180,6 +1667,11 @@ impl AgentFSFuse {
             uid,
             gid,
             mountpoint_path: mountpoint_path.as_os_str().to_string_lossy().to_string(),
+            handler_registry,
+            // Phase 2: Tera Rendering Mode
+            xattr_raw_mode: Arc::new(Mutex::new(HashMap::new())),
+            source_inodes: Arc::new(Mutex::new(HashSet::new())),
+            template_renderer: Arc::new(StubTemplateRenderer::new()),
         }
     }
 
@@ -1246,6 +1738,128 @@ impl AgentFSFuse {
     fn alloc_fh(&self) -> u64 {
         self.next_fh.fetch_add(1, Ordering::SeqCst)
     }
+
+    // ─────────────────────────────────────────────────────────────
+    // Phase 2: Tera Rendering Mode Helpers (STORY-5.4)
+    // ─────────────────────────────────────────────────────────────
+
+    /// Check if an inode is a virtual "source" inode (accessed via .source suffix).
+    ///
+    /// Virtual source inodes always return raw content regardless of xattr settings.
+    fn is_source_inode(&self, ino: u64) -> bool {
+        (ino & SOURCE_INODE_MASK) != 0
+    }
+
+    /// Get the real inode from a potentially virtual source inode.
+    fn get_real_inode(&self, ino: u64) -> u64 {
+        ino & !SOURCE_INODE_MASK
+    }
+
+    /// Create a virtual source inode from a real inode.
+    fn make_source_inode(&self, real_ino: u64) -> u64 {
+        real_ino | SOURCE_INODE_MASK
+    }
+
+    /// Check if a file should be rendered (based on path and xattr mode).
+    ///
+    /// Returns `true` if the file:
+    /// - Is a markdown file (ends with `.md`)
+    /// - Is NOT accessed via `.source` suffix
+    /// - Is NOT in raw mode (xattr `user.agentfs.raw=1`)
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - The file path
+    /// * `ino` - The inode number (may be virtual source inode)
+    fn should_render(&self, path: &str, ino: u64) -> bool {
+        // Virtual source inodes always return raw content
+        if self.is_source_inode(ino) {
+            return false;
+        }
+
+        // Only render .md files
+        if !path.to_lowercase().ends_with(".md") {
+            return false;
+        }
+
+        // Don't render paths ending in .source (shouldn't happen, but safety check)
+        if path.ends_with(SOURCE_SUFFIX) {
+            return false;
+        }
+
+        // Check xattr - default is rendered mode (raw=false)
+        !self.is_raw_mode(ino)
+    }
+
+    /// Check if an inode is in raw mode.
+    ///
+    /// Returns `true` if:
+    /// - Inode is a virtual source inode (accessed via .source suffix), OR
+    /// - xattr `user.agentfs.raw=1` is set
+    ///
+    /// Defaults to `false` (rendered mode) if not explicitly set.
+    fn is_raw_mode(&self, ino: u64) -> bool {
+        // Virtual source inodes are always raw
+        if self.is_source_inode(ino) {
+            return true;
+        }
+
+        // Check xattr cache - default is rendered mode (raw=false)
+        let xattr_cache = self.xattr_raw_mode.lock();
+        *xattr_cache.get(&ino).unwrap_or(&false)
+    }
+
+    /// Set raw mode for an inode.
+    fn set_raw_mode(&self, ino: u64, raw: bool) {
+        let real_ino = self.get_real_inode(ino);
+        let mut xattr_cache = self.xattr_raw_mode.lock();
+        xattr_cache.insert(real_ino, raw);
+    }
+
+    /// Check if write is blocked for a file (rendered mode on .md files).
+    ///
+    /// Write is blocked when:
+    /// - File is a markdown file (ends with `.md`)
+    /// - File is in rendered mode (xattr `user.agentfs.raw=0` or default)
+    /// - File is NOT accessed via `.source` suffix
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - The file path
+    /// * `ino` - The inode number
+    fn is_write_blocked(&self, path: &str, ino: u64) -> bool {
+        // Virtual source inodes are always writable
+        if self.is_source_inode(ino) {
+            return false;
+        }
+
+        // Only block writes to .md files
+        if !path.to_lowercase().ends_with(".md") {
+            return false;
+        }
+
+        // Block if in rendered mode (raw=false, the default)
+        !self.is_raw_mode(ino)
+    }
+
+    /// Render markdown content with the template renderer.
+    ///
+    /// Returns rendered content, or graceful error content if rendering fails (AC13).
+    /// Respects the render timeout (AC14).
+    fn render_content(&self, raw_content: &[u8]) -> Vec<u8> {
+        match self.template_renderer.render_with_timeout(raw_content, RENDER_TIMEOUT) {
+            Ok(rendered) => rendered,
+            Err(err_msg) => {
+                // AC13: Return graceful error content, not crash
+                let error_content = format!(
+                    "<!-- AgentFS Render Error: {} -->\n\n{}",
+                    err_msg,
+                    String::from_utf8_lossy(raw_content)
+                );
+                error_content.into_bytes()
+            }
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1297,13 +1911,21 @@ pub fn mount(
     fs: Arc<dyn FileSystem>,
     opts: FuseMountOptions,
     runtime: Runtime,
+    handler_registry: Option<HandlerRegistry>,
 ) -> anyhow::Result<()> {
     // Use provided uid/gid or default to current user
     // This avoids "dubious ownership" errors from git and similar tools
     let uid = opts.uid.unwrap_or_else(|| unsafe { libc::getuid() });
     let gid = opts.gid.unwrap_or_else(|| unsafe { libc::getgid() });
 
-    let fs = AgentFSFuse::new(fs, runtime, uid, gid, opts.mountpoint.clone());
+    let fs = AgentFSFuse::new(
+        fs,
+        runtime,
+        uid,
+        gid,
+        opts.mountpoint.clone(),
+        handler_registry,
+    );
 
     fs.add_path(1, "/".to_string());
 
@@ -1318,4 +1940,148 @@ pub fn mount(
     crate::fuser::mount2(fs, &opts.mountpoint, &mount_opts)?;
 
     Ok(())
+}
+
+// ─────────────────────────────────────────────────────────────
+// Tests for Phase 2: Tera Rendering Mode (STORY-5.4)
+// ─────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─────────────────────────────────────────────────────────────
+    // StubTemplateRenderer Tests
+    // ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_stub_renderer_passthrough_plain_content() {
+        let renderer = StubTemplateRenderer::new();
+        let content = b"# Hello World\n\nNo template syntax here.";
+        let result = renderer.render_with_timeout(content, Duration::from_secs(5));
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), content.to_vec());
+    }
+
+    #[test]
+    fn test_stub_renderer_adds_notice_for_tera_syntax() {
+        let renderer = StubTemplateRenderer::new();
+        let content = b"# Hello {{ name }}";
+        let result = renderer.render_with_timeout(content, Duration::from_secs(5));
+
+        assert!(result.is_ok());
+        let rendered = result.unwrap();
+        let rendered_str = String::from_utf8_lossy(&rendered);
+
+        // Should contain the notice
+        assert!(rendered_str.contains("AgentFS Notice"));
+        assert!(rendered_str.contains("STORY-2.1.5"));
+        // Should also contain the original content
+        assert!(rendered_str.contains("{{ name }}"));
+    }
+
+    #[test]
+    fn test_stub_renderer_detects_tera_block_syntax() {
+        let renderer = StubTemplateRenderer::new();
+        let content = b"{% for item in items %}{{ item }}{% endfor %}";
+        let result = renderer.render_with_timeout(content, Duration::from_secs(5));
+
+        assert!(result.is_ok());
+        let rendered = result.unwrap();
+        let rendered_str = String::from_utf8_lossy(&rendered);
+        assert!(rendered_str.contains("AgentFS Notice"));
+    }
+
+    #[test]
+    fn test_has_template_syntax_detection() {
+        assert!(StubTemplateRenderer::has_template_syntax(b"{{ variable }}"));
+        assert!(StubTemplateRenderer::has_template_syntax(b"{% if true %}"));
+        assert!(StubTemplateRenderer::has_template_syntax(b"{# comment #}"));
+        assert!(!StubTemplateRenderer::has_template_syntax(b"# Plain markdown"));
+        assert!(!StubTemplateRenderer::has_template_syntax(b"No special chars"));
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Source Inode Tests
+    // ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_source_inode_mask() {
+        // Verify SOURCE_INODE_MASK is set correctly
+        assert_eq!(SOURCE_INODE_MASK, 0x4000_0000_0000_0000);
+    }
+
+    #[test]
+    fn test_make_source_inode() {
+        let real_ino: u64 = 42;
+        let source_ino = real_ino | SOURCE_INODE_MASK;
+
+        assert_eq!(source_ino, 0x4000_0000_0000_002A);
+        assert_ne!(source_ino, real_ino);
+    }
+
+    #[test]
+    fn test_get_real_inode_from_source() {
+        let real_ino: u64 = 12345;
+        let source_ino = real_ino | SOURCE_INODE_MASK;
+        let recovered = source_ino & !SOURCE_INODE_MASK;
+
+        assert_eq!(recovered, real_ino);
+    }
+
+    #[test]
+    fn test_is_source_inode_detection() {
+        let real_ino: u64 = 100;
+        let source_ino = real_ino | SOURCE_INODE_MASK;
+
+        assert!((source_ino & SOURCE_INODE_MASK) != 0);
+        assert!((real_ino & SOURCE_INODE_MASK) == 0);
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // xattr Constants Tests
+    // ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_xattr_raw_mode_constant() {
+        assert_eq!(XATTR_RAW_MODE, "user.agentfs.raw");
+    }
+
+    #[test]
+    fn test_source_suffix_constant() {
+        assert_eq!(SOURCE_SUFFIX, ".source");
+    }
+
+    #[test]
+    fn test_render_timeout_constant() {
+        assert_eq!(RENDER_TIMEOUT, Duration::from_secs(5));
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Path Matching Tests
+    // ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_markdown_file_detection() {
+        assert!("/path/to/file.md".to_lowercase().ends_with(".md"));
+        assert!("/path/to/FILE.MD".to_lowercase().ends_with(".md"));
+        assert!(!"/path/to/file.txt".to_lowercase().ends_with(".md"));
+        assert!(!"/path/to/file.markdown".to_lowercase().ends_with(".md"));
+    }
+
+    #[test]
+    fn test_source_suffix_detection() {
+        assert!("file.md.source".ends_with(SOURCE_SUFFIX));
+        assert!("README.md.source".ends_with(SOURCE_SUFFIX));
+        assert!(!"file.md".ends_with(SOURCE_SUFFIX));
+        assert!(!"file.source.md".ends_with(SOURCE_SUFFIX));
+    }
+
+    #[test]
+    fn test_strip_source_suffix() {
+        let name = "file.md.source";
+        let stripped = &name[..name.len() - SOURCE_SUFFIX.len()];
+        assert_eq!(stripped, "file.md");
+    }
 }

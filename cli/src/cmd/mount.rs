@@ -114,7 +114,7 @@ pub fn mount(args: MountArgs) -> Result<()> {
             }
         })?;
 
-        crate::fuse::mount(fs, fuse_opts, rt)
+        crate::fuse::mount(fs, fuse_opts, rt, None)
     };
 
     if args.foreground {

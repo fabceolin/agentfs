@@ -1,4 +1,5 @@
 pub mod cmd;
+pub mod handler;
 pub mod parser;
 pub mod sandbox;
 

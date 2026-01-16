@@ -61,7 +61,7 @@
 //! ```
 
 use agentfs_sdk::error::{Error, Result};
-use agentfs_sdk::{BoxedFile, DirEntry, FileSystem, Stats};
+use agentfs_sdk::{DirEntry, FileSystem, Stats};
 use async_trait::async_trait;
 use std::sync::Arc;
 
@@ -832,5 +832,220 @@ mod tests {
         };
 
         assert!(h2.priority() < h1.priority());
+    }
+
+    #[test]
+    fn test_default_handler_accepts_all_paths() {
+        // DefaultHandler should accept all paths
+        struct MockFs;
+
+        #[async_trait]
+        impl FileSystem for MockFs {
+            async fn stat(&self, _path: &str) -> Result<Option<Stats>> {
+                Ok(None)
+            }
+            async fn lstat(&self, _path: &str) -> Result<Option<Stats>> {
+                Ok(None)
+            }
+            async fn readdir(&self, _path: &str) -> Result<Option<Vec<String>>> {
+                Ok(None)
+            }
+            async fn readdir_plus(&self, _path: &str) -> Result<Option<Vec<DirEntry>>> {
+                Ok(None)
+            }
+            async fn mkdir(&self, _path: &str) -> Result<()> {
+                Ok(())
+            }
+            async fn remove(&self, _path: &str) -> Result<()> {
+                Ok(())
+            }
+            async fn rename(&self, _from: &str, _to: &str) -> Result<()> {
+                Ok(())
+            }
+            async fn symlink(&self, _target: &str, _linkpath: &str) -> Result<()> {
+                Ok(())
+            }
+            async fn link(&self, _oldpath: &str, _newpath: &str) -> Result<()> {
+                Ok(())
+            }
+            async fn readlink(&self, _path: &str) -> Result<Option<String>> {
+                Ok(None)
+            }
+            async fn chmod(&self, _path: &str, _mode: u32) -> Result<()> {
+                Ok(())
+            }
+            async fn open(&self, _path: &str) -> Result<agentfs_sdk::BoxedFile> {
+                Err(Error::Custom("Not implemented".to_string()))
+            }
+            async fn create_file(
+                &self,
+                _path: &str,
+                _mode: u32,
+            ) -> Result<(Stats, agentfs_sdk::BoxedFile)> {
+                Err(Error::Custom("Not implemented".to_string()))
+            }
+            async fn statfs(&self) -> Result<agentfs_sdk::FilesystemStats> {
+                Ok(agentfs_sdk::FilesystemStats {
+                    bytes_used: 0,
+                    inodes: 0,
+                })
+            }
+            async fn read_file(&self, _path: &str) -> Result<Option<Vec<u8>>> {
+                Ok(None)
+            }
+            async fn write_file(&self, _path: &str, _data: &[u8]) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        let fs: Arc<dyn FileSystem> = Arc::new(MockFs);
+        let handler = DefaultHandler::new(fs);
+
+        // DefaultHandler should accept ALL paths
+        assert!(handler.can_handle("/any/path", None));
+        assert!(handler.can_handle("/", None));
+        assert!(handler.can_handle("/deeply/nested/path/file.txt", None));
+        assert!(handler.can_handle(".gd.md", None)); // Even GraphDocs extension
+    }
+
+    #[test]
+    fn test_default_handler_has_max_priority() {
+        struct MockFs;
+
+        #[async_trait]
+        impl FileSystem for MockFs {
+            async fn stat(&self, _path: &str) -> Result<Option<Stats>> {
+                Ok(None)
+            }
+            async fn lstat(&self, _path: &str) -> Result<Option<Stats>> {
+                Ok(None)
+            }
+            async fn readdir(&self, _path: &str) -> Result<Option<Vec<String>>> {
+                Ok(None)
+            }
+            async fn readdir_plus(&self, _path: &str) -> Result<Option<Vec<DirEntry>>> {
+                Ok(None)
+            }
+            async fn mkdir(&self, _path: &str) -> Result<()> {
+                Ok(())
+            }
+            async fn remove(&self, _path: &str) -> Result<()> {
+                Ok(())
+            }
+            async fn rename(&self, _from: &str, _to: &str) -> Result<()> {
+                Ok(())
+            }
+            async fn symlink(&self, _target: &str, _linkpath: &str) -> Result<()> {
+                Ok(())
+            }
+            async fn link(&self, _oldpath: &str, _newpath: &str) -> Result<()> {
+                Ok(())
+            }
+            async fn readlink(&self, _path: &str) -> Result<Option<String>> {
+                Ok(None)
+            }
+            async fn chmod(&self, _path: &str, _mode: u32) -> Result<()> {
+                Ok(())
+            }
+            async fn open(&self, _path: &str) -> Result<agentfs_sdk::BoxedFile> {
+                Err(Error::Custom("Not implemented".to_string()))
+            }
+            async fn create_file(
+                &self,
+                _path: &str,
+                _mode: u32,
+            ) -> Result<(Stats, agentfs_sdk::BoxedFile)> {
+                Err(Error::Custom("Not implemented".to_string()))
+            }
+            async fn statfs(&self) -> Result<agentfs_sdk::FilesystemStats> {
+                Ok(agentfs_sdk::FilesystemStats {
+                    bytes_used: 0,
+                    inodes: 0,
+                })
+            }
+            async fn read_file(&self, _path: &str) -> Result<Option<Vec<u8>>> {
+                Ok(None)
+            }
+            async fn write_file(&self, _path: &str, _data: &[u8]) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        let fs: Arc<dyn FileSystem> = Arc::new(MockFs);
+        let handler = DefaultHandler::new(fs);
+
+        // DefaultHandler must have u32::MAX priority (always last)
+        assert_eq!(handler.priority(), u32::MAX);
+    }
+
+    #[test]
+    fn test_registry_with_filesystem_creates_default_handler() {
+        struct MockFs;
+
+        #[async_trait]
+        impl FileSystem for MockFs {
+            async fn stat(&self, _path: &str) -> Result<Option<Stats>> {
+                Ok(None)
+            }
+            async fn lstat(&self, _path: &str) -> Result<Option<Stats>> {
+                Ok(None)
+            }
+            async fn readdir(&self, _path: &str) -> Result<Option<Vec<String>>> {
+                Ok(None)
+            }
+            async fn readdir_plus(&self, _path: &str) -> Result<Option<Vec<DirEntry>>> {
+                Ok(None)
+            }
+            async fn mkdir(&self, _path: &str) -> Result<()> {
+                Ok(())
+            }
+            async fn remove(&self, _path: &str) -> Result<()> {
+                Ok(())
+            }
+            async fn rename(&self, _from: &str, _to: &str) -> Result<()> {
+                Ok(())
+            }
+            async fn symlink(&self, _target: &str, _linkpath: &str) -> Result<()> {
+                Ok(())
+            }
+            async fn link(&self, _oldpath: &str, _newpath: &str) -> Result<()> {
+                Ok(())
+            }
+            async fn readlink(&self, _path: &str) -> Result<Option<String>> {
+                Ok(None)
+            }
+            async fn chmod(&self, _path: &str, _mode: u32) -> Result<()> {
+                Ok(())
+            }
+            async fn open(&self, _path: &str) -> Result<agentfs_sdk::BoxedFile> {
+                Err(Error::Custom("Not implemented".to_string()))
+            }
+            async fn create_file(
+                &self,
+                _path: &str,
+                _mode: u32,
+            ) -> Result<(Stats, agentfs_sdk::BoxedFile)> {
+                Err(Error::Custom("Not implemented".to_string()))
+            }
+            async fn statfs(&self) -> Result<agentfs_sdk::FilesystemStats> {
+                Ok(agentfs_sdk::FilesystemStats {
+                    bytes_used: 0,
+                    inodes: 0,
+                })
+            }
+            async fn read_file(&self, _path: &str) -> Result<Option<Vec<u8>>> {
+                Ok(None)
+            }
+            async fn write_file(&self, _path: &str, _data: &[u8]) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        let fs: Arc<dyn FileSystem> = Arc::new(MockFs);
+        let registry = HandlerRegistry::with_filesystem(fs);
+
+        // Registry created with_filesystem should have no custom handlers
+        let handlers = registry.list_handlers();
+        assert!(handlers.is_empty());
     }
 }

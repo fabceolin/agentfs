@@ -76,18 +76,47 @@ Status: Production
 
 ### Fase 2: Parsing e Populacao
 
-#### STORY-2.1: Markdown Parser
+#### STORY-2.1: Markdown Parser (Parent Story)
 **Como** desenvolvedor
 **Quero** um parser de Markdown para grafos
 **Para** converter documentos existentes
 
+**Sub-Stories**:
+
+| Sub-Story | Descricao | Status |
+|-----------|-----------|--------|
+| [STORY-2.1.1](../stories/graphdocs/STORY-2.1.1-core-markdown-parser.md) | Core Parser (headers, paragraphs, lists, code) | Ready |
+| [STORY-2.1.2](../stories/graphdocs/STORY-2.1.2-variable-detection.md) | Variable Detection & Typing | Ready |
+| [STORY-2.1.3](../stories/graphdocs/STORY-2.1.3-template-conformance.md) | Template Conformance & Status Normalization | Ready |
+| [STORY-2.1.4](../stories/graphdocs/STORY-2.1.4-agent-transformation.md) | Agent-Based Transformation (TEA subprocess) | Ready |
+
 **Criterios de Aceitacao**:
-- [ ] Parse headers (H1-H6) como secoes
-- [ ] Parse paragrafos como secoes
-- [ ] Parse listas como secoes
-- [ ] Parse code blocks como secoes
-- [ ] Detectar variaveis `{{name}}`
-- [ ] Gerar estrutura de edges
+
+*Core Parsing (2.1.1)*:
+- [ ] AC1: Parse headers (H1-H6) como secoes
+- [ ] AC2: Parse paragrafos como secoes
+- [ ] AC3: Parse listas como secoes
+- [ ] AC4: Parse code blocks como secoes
+
+*Variable Detection (2.1.2)*:
+- [ ] AC5: Detectar variaveis `{{name}}` com inferencia de tipo
+- [ ] AC6: Suportar tipos: `bool`, `enum`, `number`, `string`, `string[]`, `object`
+- [ ] AC7: Parse YAML frontmatter para type hints
+
+*Template Conformance (2.1.3)*:
+- [ ] AC8: Gerar estrutura de edges
+- [ ] AC9: Detectar templates em diretorios e validar conformidade
+- [ ] AC10: Normalizar status usando embeddings (model2vec)
+
+*Agent Transformation (2.1.4)*:
+- [ ] AC11: Usar YAML agents locais (TEA subprocess) com modelo GGUF para transformar documentos
+
+**Arquitetura**:
+```
+2.1.1 (Core) ──┬──▶ 2.1.3 (Conformance) ──▶ 2.1.4 (Agent) ──▶ TEA (external)
+               │
+2.1.2 (Vars) ──┘
+```
 
 ---
 
@@ -378,7 +407,14 @@ MIT License
 | `schema/duckagentfs.sql` | Tabelas gd_* | Criado |
 | `cli/src/handler.rs` | GraphDocsHandler | Criado |
 | `sdk/rust/src/graphdocs/engine.rs` | Engine (futuro) | Pendente |
-| `sdk/rust/src/graphdocs/parser.rs` | Parser (futuro) | Pendente |
+| `sdk/rust/src/graphdocs/parser.rs` | Core Parser (2.1.1) | Pendente |
+| `sdk/rust/src/graphdocs/variable_types.rs` | Variable Types (2.1.2) | Pendente |
+| `sdk/rust/src/graphdocs/conformance.rs` | Template Conformance (2.1.3) | Pendente |
+| `sdk/rust/src/graphdocs/normalizer.rs` | Status Normalization (2.1.3) | Pendente |
+| `sdk/rust/src/graphdocs/embedding_matcher.rs` | Embedding Matcher (2.1.3) | Pendente |
+| `sdk/rust/src/graphdocs/agent_transformer.rs` | TEA Subprocess (2.1.4) | Pendente |
+| `agents/document-conformance-agent.yaml` | Status Agent (2.1.4) | Pendente |
+| `agents/document-transformer-agent.yaml` | Transform Agent (2.1.4) | Pendente |
 
 ## Dependencias
 
@@ -390,7 +426,20 @@ EPIC-DUCKAGENTFS-001
           +-- EPIC-GRAPHDOCS-001
                 |
                 +-- GraphDocsHandler registrado no HandlerRegistry
+                |
+                +-- STORY-2.1.4 (Agent Transform)
+                      |
+                      +-- TEA Binary (external, subprocess)
+                            |
+                            +-- GGUF Model (gemma-3n-E4B-it)
 ```
+
+### Dependencias Externas (STORY-2.1.4)
+
+| Dependencia | Instalacao |
+|-------------|------------|
+| TEA binary | `cargo install --path /path/to/tea --features llm-local` |
+| GGUF model | Download `gemma-3n-E4B-it-Q4_K_M.gguf` from HuggingFace |
 
 ## Riscos
 
