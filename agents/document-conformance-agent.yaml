@@ -1,6 +1,5 @@
 # agents/document-conformance-agent.yaml
-# RUN: tea run document-conformance-agent.yaml --input '{"raw_status": "[**Done**]"}'
-# Or with tea-python: tea-python run document-conformance-agent.yaml --gguf ~/.cache/tea/models/gemma-3-4b-it-Q4_K_M.gguf --input '{"raw_status": "[**Done**]"}'
+# RUN: TEA_IMAGE=ghcr.io/fabceolin/tea:gemma3n-e4b tea-docker run document-conformance-agent.yaml --input '{"raw_status": "[**Done**]"}'
 
 name: document-conformance-fixer
 description: Normalizes status text using local LLM classification

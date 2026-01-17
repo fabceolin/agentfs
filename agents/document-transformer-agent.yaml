@@ -1,5 +1,5 @@
 # agents/document-transformer-agent.yaml
-# RUN: tea-rust run document-transformer-agent.yaml --gguf ~/.cache/tea/models/gemma-3-4b-it-Q4_K_M.gguf --input '...'
+# RUN: TEA_IMAGE=ghcr.io/fabceolin/tea:gemma3n-e4b tea-docker run document-transformer-agent.yaml --input '...'
 
 name: document-transformer
 description: Transforms documents to match template structure using local LLM
