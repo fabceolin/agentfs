@@ -1,15 +1,18 @@
-use agentfs_sdk::{get_mounts, AgentFSOptions, FileSystem, HostFS, Mount, OverlayFS};
-use anyhow::Result;
+use agentfs_sdk::filesystem::duckagentfs::{DuckAgentFSConfig, DuckConnectionPool};
+use agentfs_sdk::filesystem::DuckAgentFS;
+use agentfs_sdk::{get_mounts, FileSystem, Mount};
+use anyhow::{Context, Result};
 use std::{
     io::{self, Write},
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
     sync::Arc,
 };
-use turso::value::Value;
 
 #[cfg(target_os = "linux")]
-use crate::{cmd::init::open_agentfs, fuse::FuseMountOptions};
+use crate::fuse::FuseMountOptions;
+#[cfg(target_os = "linux")]
+use crate::handler::{DefaultHandler, GraphDocsDirInjector, GraphDocsHandler, HandlerRegistry};
 
 /// Arguments for the mount command.
 #[derive(Debug, Clone)]
@@ -30,10 +33,91 @@ pub struct MountArgs {
     pub gid: Option<u32>,
 }
 
+/// Resolve database path from ID or path string.
+///
+/// Supports:
+/// - `:memory:` for in-memory database
+/// - Existing file path (used directly)
+/// - Agent ID (looks for `.agentfs/{id}.duckdb`)
+#[cfg(target_os = "linux")]
+fn resolve_db_path(id_or_path: &str) -> Result<String> {
+    if id_or_path == ":memory:" {
+        return Ok(":memory:".to_string());
+    }
+
+    let path = std::path::Path::new(id_or_path);
+    if path.exists() {
+        return Ok(id_or_path.to_string());
+    }
+
+    // Try as agent ID
+    let agentfs_dir = agentfs_sdk::agentfs_dir();
+    let db_path = agentfs_dir.join(format!("{}.duckdb", id_or_path));
+    if db_path.exists() {
+        return Ok(db_path.to_string_lossy().to_string());
+    }
+
+    anyhow::bail!(
+        "DuckDB database not found: {} (tried {} and {:?})",
+        id_or_path,
+        id_or_path,
+        db_path
+    )
+}
+
+/// Check if gd_documents table exists (GraphDocs tables present).
+#[cfg(target_os = "linux")]
+fn has_graphdocs_tables(pool: &DuckConnectionPool) -> bool {
+    let conn = match pool.get_connection() {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+
+    // Check if gd_documents table exists
+    let result: std::result::Result<i64, _> = conn.query_row(
+        "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'gd_documents'",
+        [],
+        |row| row.get(0),
+    );
+
+    matches!(result, Ok(count) if count > 0)
+}
+
+/// Create handler registry with GraphDocs support if available.
+#[cfg(target_os = "linux")]
+fn create_handler_registry(
+    fs: Arc<dyn FileSystem>,
+    pool: &DuckConnectionPool,
+) -> HandlerRegistry {
+    let default_handler = Arc::new(DefaultHandler::new(fs));
+
+    // Check if GraphDocs tables exist
+    if has_graphdocs_tables(pool) {
+        tracing::info!("GraphDocs tables detected, registering handlers");
+
+        // Create registry with default handler
+        let mut registry = HandlerRegistry::new(default_handler.clone());
+
+        // Register GraphDocsHandler for /.graphdocs/ virtual directory
+        let graphdocs_handler = Arc::new(GraphDocsHandler::new(pool.clone()));
+        registry.register(graphdocs_handler);
+
+        // Register GraphDocsDirInjector to add .graphdocs to root listings
+        let injector = Arc::new(GraphDocsDirInjector::new(default_handler));
+        registry.register(injector);
+
+        registry
+    } else {
+        tracing::debug!("No GraphDocs tables found, using default handler only");
+        HandlerRegistry::new(default_handler)
+    }
+}
+
 /// Mount the agent filesystem using FUSE.
 #[cfg(target_os = "linux")]
 pub fn mount(args: MountArgs) -> Result<()> {
-    let opts = AgentFSOptions::resolve(&args.id_or_path)?;
+    // Resolve database path (DuckDB only)
+    let db_path = resolve_db_path(&args.id_or_path)?;
 
     let fsname = format!(
         "agentfs:{}",
@@ -47,22 +131,6 @@ pub fn mount(args: MountArgs) -> Result<()> {
     }
 
     let mountpoint = std::fs::canonicalize(args.mountpoint.clone())?;
-    let mountpoint_ino = {
-        #[cfg(target_family = "unix")]
-        {
-            use anyhow::Context as _;
-            std::fs::metadata(mountpoint.clone())
-                .context("Failed to get mountpoint inode")?
-                .ino()
-        }
-        #[cfg(not(target_family = "unix"))]
-        {
-            // Should be impossible to reach this path
-            return Err(anyhow::anyhow!(
-                "FUSE mountpoint inode is not supported on this platform"
-            ));
-        }
-    };
 
     let fuse_opts = FuseMountOptions {
         mountpoint: args.mountpoint,
@@ -75,46 +143,27 @@ pub fn mount(args: MountArgs) -> Result<()> {
 
     let mount = move || {
         let rt = crate::get_runtime();
-        let agentfs = rt.block_on(open_agentfs(opts))?;
 
-        // Check for overlay configuration
-        let fs: Arc<dyn FileSystem> = rt.block_on(async {
-            let conn = agentfs.get_connection().await?;
+        // Open DuckDB database
+        let config = DuckAgentFSConfig {
+            path: db_path.clone(),
+            ..Default::default()
+        };
 
-            // Check if fs_overlay_config table exists and has base_path
-            let query = "SELECT value FROM fs_overlay_config WHERE key = 'base_path'";
-            let base_path: Option<String> = match conn.query(query, ()).await {
-                Ok(mut rows) => {
-                    if let Ok(Some(row)) = rows.next().await {
-                        row.get_value(0).ok().and_then(|v| {
-                            if let Value::Text(s) = v {
-                                Some(s.clone())
-                            } else {
-                                None
-                            }
-                        })
-                    } else {
-                        None
-                    }
-                }
-                Err(_) => None, // Table doesn't exist or query failed
-            };
+        let duckfs = rt
+            .block_on(DuckAgentFS::open(config))
+            .context("Failed to open DuckDB database")?;
 
-            if let Some(base_path) = base_path {
-                // Create OverlayFS with HostFS base
-                eprintln!("Using overlay filesystem with base: {}", base_path);
-                let hostfs = HostFS::new(&base_path)?;
-                #[cfg(target_family = "unix")]
-                let hostfs = { hostfs.with_fuse_mountpoint(mountpoint_ino) };
-                let overlay = OverlayFS::new(Arc::new(hostfs), agentfs.fs);
-                Ok::<Arc<dyn FileSystem>, anyhow::Error>(Arc::new(overlay))
-            } else {
-                // Plain AgentFS
-                Ok(Arc::new(agentfs.fs) as Arc<dyn FileSystem>)
-            }
-        })?;
+        // Get the connection pool for handler registration
+        let pool = duckfs.pool();
 
-        crate::fuse::mount(fs, fuse_opts, rt, None)
+        // Create filesystem reference
+        let fs: Arc<dyn FileSystem> = Arc::new(duckfs);
+
+        // Create handler registry with GraphDocs support if tables exist
+        let handler_registry = create_handler_registry(fs.clone(), &pool);
+
+        crate::fuse::mount(fs, fuse_opts, rt, Some(handler_registry))
     };
 
     if args.foreground {

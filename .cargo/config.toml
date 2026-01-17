@@ -1,0 +1,3 @@
+[build]
+jobs = 12
+rustflags = ["-L", "/usr/lib/x86_64-linux-gnu"]

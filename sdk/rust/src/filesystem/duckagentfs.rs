@@ -2000,4 +2000,97 @@ mod tests {
             assert!(result.is_ok(), "Table {} should exist", table);
         }
     }
+
+    /// Test that fs_current view coalesces values from multiple journal events.
+    ///
+    /// This test verifies the fix for STORY-BUG-001 where fs_current would return
+    /// NULL for fields that weren't updated in the latest journal event.
+    ///
+    /// Scenario:
+    /// 1. Create a file (event has parent, name, mode, size=0)
+    /// 2. Update only the size (event has ONLY size, other fields are NULL)
+    /// 3. Query fs_current and verify all fields are present (coalesced)
+    #[tokio::test]
+    async fn test_fs_current_coalesces_multi_event_inodes() {
+        let config = DuckAgentFSConfig {
+            path: ":memory:".to_string(),
+            ..Default::default()
+        };
+
+        let fs = DuckAgentFS::open(config)
+            .await
+            .expect("Failed to open DuckAgentFS");
+        let conn = fs.pool.get_connection().expect("Failed to get connection");
+
+        // Step 1: Create a file with full metadata
+        let inode: i64 = 100;
+        conn.execute(
+            "INSERT INTO fs_journal (inode, event_type, parent, name, mode, size, nlink) VALUES (?, 'create', 1, 'test.txt', 33188, 0, 1)",
+            params![inode],
+        ).expect("Failed to insert create event");
+
+        // Step 2: Update only the size (simulating a write operation)
+        // This is how the bug manifested - only size is set, other fields are NULL
+        conn.execute(
+            "INSERT INTO fs_journal (inode, event_type, size) VALUES (?, 'update', 100)",
+            params![inode],
+        ).expect("Failed to insert update event");
+
+        // Step 3: Query fs_current and verify all fields are coalesced
+        let result: (Option<i64>, Option<String>, Option<i64>, Option<i64>) = conn
+            .query_row(
+                "SELECT parent, name, mode, size FROM fs_current WHERE inode = ?",
+                params![inode],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("Failed to query fs_current");
+
+        // Verify coalescing worked - all fields should be present
+        assert_eq!(result.0, Some(1), "parent should be coalesced from create event");
+        assert_eq!(result.1, Some("test.txt".to_string()), "name should be coalesced from create event");
+        assert_eq!(result.2, Some(33188), "mode should be coalesced from create event");
+        assert_eq!(result.3, Some(100), "size should be from latest update event");
+    }
+
+    /// Test write-then-read via FileSystem trait.
+    ///
+    /// This is an integration test that verifies the complete flow:
+    /// create file -> write content -> read back.
+    #[tokio::test]
+    async fn test_write_then_read_file() {
+        let config = DuckAgentFSConfig {
+            path: ":memory:".to_string(),
+            ..Default::default()
+        };
+
+        let fs = DuckAgentFS::open(config)
+            .await
+            .expect("Failed to open DuckAgentFS");
+
+        // Write a file
+        let content = b"Hello, DuckAgentFS!";
+        fs.write_file("/test.txt", content)
+            .await
+            .expect("Failed to write file");
+
+        // Read it back
+        let read_content = fs
+            .read_file("/test.txt")
+            .await
+            .expect("Failed to read file")
+            .expect("File should exist");
+
+        assert_eq!(read_content, content, "Read content should match written content");
+
+        // Stat the file to verify metadata is complete
+        let stats = fs
+            .stat("/test.txt")
+            .await
+            .expect("Failed to stat file")
+            .expect("File should exist");
+
+        assert!(stats.is_file(), "Should be a file");
+        assert_eq!(stats.size, content.len() as i64, "Size should match content length");
+        assert!(stats.mode > 0, "Mode should be set");
+    }
 }

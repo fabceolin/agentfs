@@ -83,6 +83,9 @@ pub enum GraphDocsCommand {
     /// Check and fix document conformance using TEA agents
     Conform(ConformArgs),
 
+    /// Check document conformance against a template (no LLM required)
+    Check(CheckArgs),
+
     /// Edit a document in a text editor (YAML/TOML format)
     Edit(EditArgs),
 }

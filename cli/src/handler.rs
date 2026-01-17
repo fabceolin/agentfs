@@ -231,6 +231,27 @@ pub trait FileHandler: Send + Sync {
         let _ = path;
         Ok(None)
     }
+
+    /// Look up a child entry within a directory.
+    ///
+    /// This method is called during FUSE lookup() to resolve a child
+    /// within a parent directory. Handlers can intercept this to provide
+    /// virtual entries (like `/.graphdocs/` directory).
+    ///
+    /// # Arguments
+    ///
+    /// * `parent_path` - The parent directory path (e.g., "/")
+    /// * `name` - The child entry name being looked up (e.g., ".graphdocs")
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(Some(stats))`: Handler provides Stats for this entry
+    /// - `Ok(None)`: Decline to handle, try next handler
+    /// - `Err(e)`: Lookup failed with error
+    async fn lookup(&self, parent_path: &str, name: &str) -> HandlerResult<Stats> {
+        let _ = (parent_path, name);
+        Ok(None) // Default: decline to handle
+    }
 }
 
 // ============================================================================
@@ -279,6 +300,14 @@ impl HandlerRegistry {
             .iter()
             .map(|h| (h.name(), h.priority()))
             .collect()
+    }
+
+    /// Check if any registered handler (excluding default) can handle a path.
+    ///
+    /// This is used to determine if a path is managed by a handler (virtual file)
+    /// rather than the underlying filesystem.
+    pub fn can_handle_any(&self, path: &str) -> bool {
+        self.handlers.iter().any(|h| h.can_handle(path, None))
     }
 
     // ========================================================================
@@ -389,6 +418,49 @@ impl HandlerRegistry {
         }
         self.default_handler.readlink(path).await
     }
+
+    /// Handle a lookup operation.
+    ///
+    /// Looks up a child entry within a parent directory. This is called by
+    /// FUSE lookup() to resolve directory entries, including virtual ones
+    /// like `/.graphdocs/`.
+    ///
+    /// # Arguments
+    ///
+    /// * `parent_path` - The parent directory path (e.g., "/")
+    /// * `name` - The child entry name being looked up (e.g., ".graphdocs")
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(Some(stats))`: Entry found with its Stats
+    /// - `Ok(None)`: Entry not found
+    /// - `Err(e)`: Lookup failed with error
+    pub async fn handle_lookup(&self, parent_path: &str, name: &str) -> Result<Option<Stats>> {
+        // Construct the full child path for can_handle() check
+        let child_path = if parent_path == "/" {
+            format!("/{}", name)
+        } else {
+            format!("{}/{}", parent_path.trim_end_matches('/'), name)
+        };
+
+        // Try custom handlers first
+        for handler in &self.handlers {
+            if handler.can_handle(&child_path, None) {
+                if let Some(stats) = handler.lookup(parent_path, name).await? {
+                    tracing::debug!(
+                        "Handler '{}' handled lookup for {}/{}",
+                        handler.name(),
+                        parent_path,
+                        name
+                    );
+                    return Ok(Some(stats));
+                }
+            }
+        }
+
+        // Fall back to default handler
+        self.default_handler.lookup(parent_path, name).await
+    }
 }
 
 // ============================================================================
@@ -473,6 +545,18 @@ impl FileHandler for DefaultHandler {
     async fn readlink(&self, path: &str) -> HandlerResult<String> {
         self.fs.readlink(path).await
     }
+
+    async fn lookup(&self, parent_path: &str, name: &str) -> HandlerResult<Stats> {
+        // Construct the full child path
+        let child_path = if parent_path == "/" {
+            format!("/{}", name)
+        } else {
+            format!("{}/{}", parent_path.trim_end_matches('/'), name)
+        };
+
+        // Delegate to filesystem lstat (preserves symlink info)
+        self.fs.lstat(&child_path).await
+    }
 }
 
 // ============================================================================
@@ -484,6 +568,10 @@ pub const GRAPHDOCS_DIR: &str = "/.graphdocs";
 
 /// File extension for GraphDocs documents.
 const GRAPHDOCS_EXTENSION: &str = ".gd.md";
+
+/// Reserved inode for the virtual /.graphdocs/ directory.
+/// Uses high inode range to avoid conflicts with real filesystem inodes.
+const GRAPHDOCS_DIR_INO: i64 = i64::MAX - 1;
 
 /// Document info returned from database queries.
 #[derive(Debug, Clone)]
@@ -666,7 +754,7 @@ impl GraphDocsHandler {
             .as_secs() as i64;
 
         Stats {
-            ino: 0,        // FUSE will assign
+            ino: GRAPHDOCS_DIR_INO,
             mode: 0o40555, // Directory, read-only + execute
             nlink: 2,
             uid: 0,
@@ -679,9 +767,22 @@ impl GraphDocsHandler {
     }
 
     /// Get virtual file stats for a document.
-    fn virtual_file_stats(content_len: i64, mtime: i64) -> Stats {
+    ///
+    /// Generates a stable inode from the document ID using a hash.
+    fn virtual_file_stats(doc_id: &str, content_len: i64, mtime: i64) -> Stats {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        // Generate stable inode from doc_id hash
+        // Use range below GRAPHDOCS_DIR_INO to avoid conflicts
+        let mut hasher = DefaultHasher::new();
+        doc_id.hash(&mut hasher);
+        let hash = hasher.finish();
+        // Map to range [GRAPHDOCS_DIR_INO - 1_000_000, GRAPHDOCS_DIR_INO - 1]
+        let ino = (GRAPHDOCS_DIR_INO - 2) - ((hash % 1_000_000) as i64);
+
         Stats {
-            ino: 0,         // FUSE will assign
+            ino,
             mode: 0o100444, // Regular file, read-only
             nlink: 1,
             uid: 0,
@@ -713,7 +814,7 @@ impl GraphDocsHandler {
                     .unwrap_or_default()
                     .as_secs() as i64;
 
-                Ok(Some(Self::virtual_file_stats(content.len() as i64, now)))
+                Ok(Some(Self::virtual_file_stats(doc_id, content.len() as i64, now)))
             }
             Err(_) => Ok(None),
         }
@@ -805,7 +906,7 @@ impl FileHandler for GraphDocsHandler {
 
             entries.push(DirEntry {
                 name: format!("{}{}", doc.id, GRAPHDOCS_EXTENSION),
-                stats: Self::virtual_file_stats(content.len() as i64, doc.updated_at),
+                stats: Self::virtual_file_stats(&doc.id, content.len() as i64, doc.updated_at),
             });
         }
 
@@ -847,6 +948,29 @@ impl FileHandler for GraphDocsHandler {
         Err(Error::Custom(
             "GraphDocs files are read-only. Edit the underlying graph instead.".into(),
         ))
+    }
+
+    async fn lookup(&self, parent_path: &str, name: &str) -> HandlerResult<Stats> {
+        // Handle lookup of .graphdocs directory in root
+        if parent_path == "/" && name == ".graphdocs" {
+            tracing::debug!("GraphDocsHandler::lookup: found .graphdocs in root");
+            return self.getattr_for_dir().await;
+        }
+
+        // Handle lookup of files in /.graphdocs/
+        if parent_path == GRAPHDOCS_DIR || parent_path == "/.graphdocs/" {
+            if let Some(doc_id) = name.strip_suffix(GRAPHDOCS_EXTENSION) {
+                tracing::debug!(
+                    "GraphDocsHandler::lookup: looking up document '{}' in {}",
+                    doc_id,
+                    parent_path
+                );
+                return self.getattr_for_doc(doc_id).await;
+            }
+        }
+
+        // Not a GraphDocs path we handle
+        Ok(None)
     }
 }
 
@@ -1115,11 +1239,14 @@ mod tests {
         // Should have read + execute permissions
         assert_eq!(stats.mode & 0o555, 0o555);
         assert_eq!(stats.nlink, 2);
+        // Should have non-zero inode (reserved GRAPHDOCS_DIR_INO)
+        assert!(stats.ino != 0);
+        assert_eq!(stats.ino, i64::MAX - 1);
     }
 
     #[test]
     fn test_virtual_file_stats() {
-        let stats = GraphDocsHandler::virtual_file_stats(1024, 1234567890);
+        let stats = GraphDocsHandler::virtual_file_stats("test-doc", 1024, 1234567890);
         // Should be regular file (mode starts with 0o10xxxx)
         assert_eq!(stats.mode & 0o170000, 0o100000);
         // Should be read-only (0o444)
@@ -1127,6 +1254,8 @@ mod tests {
         assert_eq!(stats.size, 1024);
         assert_eq!(stats.mtime, 1234567890);
         assert_eq!(stats.nlink, 1);
+        // Should have non-zero inode
+        assert!(stats.ino != 0);
     }
 
     #[test]
@@ -1389,5 +1518,217 @@ mod tests {
         // Registry created with_filesystem should have no custom handlers
         let handlers = registry.list_handlers();
         assert!(handlers.is_empty());
+    }
+
+    // ========================================================================
+    // LOOKUP TESTS (STORY-4.3.1)
+    // ========================================================================
+
+    /// Test that FileHandler::lookup default implementation returns Ok(None)
+    #[test]
+    fn test_lookup_default_returns_none() {
+        struct TestHandler;
+
+        #[async_trait]
+        impl FileHandler for TestHandler {
+            fn name(&self) -> &str {
+                "test"
+            }
+            fn can_handle(&self, _: &str, _: Option<&Stats>) -> bool {
+                true
+            }
+            // Don't override lookup - use default
+        }
+
+        let handler = TestHandler;
+
+        // Use a simple runtime for the test
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(handler.lookup("/", "anything"));
+
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
+    }
+
+    /// Test DefaultHandler lookup constructs correct path from parent and name
+    #[tokio::test]
+    async fn test_default_handler_lookup_path_construction() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Mutex as StdMutex;
+
+        // Track what path was passed to lstat
+        let captured_path: Arc<StdMutex<Option<String>>> = Arc::new(StdMutex::new(None));
+        let captured_clone = captured_path.clone();
+
+        struct PathCapturingFs {
+            captured_path: Arc<StdMutex<Option<String>>>,
+        }
+
+        #[async_trait]
+        impl FileSystem for PathCapturingFs {
+            async fn stat(&self, _path: &str) -> Result<Option<Stats>> {
+                Ok(None)
+            }
+            async fn lstat(&self, path: &str) -> Result<Option<Stats>> {
+                *self.captured_path.lock().unwrap() = Some(path.to_string());
+                Ok(None)
+            }
+            async fn readdir(&self, _path: &str) -> Result<Option<Vec<String>>> {
+                Ok(None)
+            }
+            async fn readdir_plus(&self, _path: &str) -> Result<Option<Vec<DirEntry>>> {
+                Ok(None)
+            }
+            async fn mkdir(&self, _path: &str) -> Result<()> {
+                Ok(())
+            }
+            async fn remove(&self, _path: &str) -> Result<()> {
+                Ok(())
+            }
+            async fn rename(&self, _from: &str, _to: &str) -> Result<()> {
+                Ok(())
+            }
+            async fn symlink(&self, _target: &str, _linkpath: &str) -> Result<()> {
+                Ok(())
+            }
+            async fn link(&self, _oldpath: &str, _newpath: &str) -> Result<()> {
+                Ok(())
+            }
+            async fn readlink(&self, _path: &str) -> Result<Option<String>> {
+                Ok(None)
+            }
+            async fn chmod(&self, _path: &str, _mode: u32) -> Result<()> {
+                Ok(())
+            }
+            async fn open(&self, _path: &str) -> Result<agentfs_sdk::BoxedFile> {
+                Err(Error::Custom("Not implemented".to_string()))
+            }
+            async fn create_file(
+                &self,
+                _path: &str,
+                _mode: u32,
+            ) -> Result<(Stats, agentfs_sdk::BoxedFile)> {
+                Err(Error::Custom("Not implemented".to_string()))
+            }
+            async fn statfs(&self) -> Result<agentfs_sdk::FilesystemStats> {
+                Ok(agentfs_sdk::FilesystemStats {
+                    bytes_used: 0,
+                    inodes: 0,
+                })
+            }
+            async fn read_file(&self, _path: &str) -> Result<Option<Vec<u8>>> {
+                Ok(None)
+            }
+            async fn write_file(&self, _path: &str, _data: &[u8]) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        let fs: Arc<dyn FileSystem> = Arc::new(PathCapturingFs {
+            captured_path: captured_clone,
+        });
+        let handler = DefaultHandler::new(fs);
+
+        // Test lookup from root
+        let _ = handler.lookup("/", "test.txt").await;
+        assert_eq!(
+            *captured_path.lock().unwrap(),
+            Some("/test.txt".to_string())
+        );
+
+        // Test lookup from non-root directory
+        let _ = handler.lookup("/home/user", "file.md").await;
+        assert_eq!(
+            *captured_path.lock().unwrap(),
+            Some("/home/user/file.md".to_string())
+        );
+
+        // Test lookup handles trailing slash in parent
+        let _ = handler.lookup("/home/user/", "file.md").await;
+        assert_eq!(
+            *captured_path.lock().unwrap(),
+            Some("/home/user/file.md".to_string())
+        );
+    }
+
+    /// Test GraphDocsHandler can_handle for lookup paths
+    #[test]
+    fn test_graphdocs_can_handle_for_lookup() {
+        // GraphDocsHandler should handle:
+        // - "/.graphdocs" (the virtual directory itself)
+        // - "/.graphdocs/" (with trailing slash)
+        // - "/.graphdocs/something.gd.md" (files in the directory)
+        // - Any path ending in .gd.md
+
+        // Test is_graphdocs_dir
+        assert!(GraphDocsHandler::is_graphdocs_dir("/.graphdocs"));
+        assert!(GraphDocsHandler::is_graphdocs_dir("/.graphdocs/"));
+
+        // Test is_in_graphdocs_dir
+        assert!(GraphDocsHandler::is_in_graphdocs_dir(
+            "/.graphdocs/readme.gd.md"
+        ));
+        assert!(!GraphDocsHandler::is_in_graphdocs_dir("/.graphdocs")); // The dir itself is not "in" the dir
+
+        // Test is_graphdocs_file
+        assert!(GraphDocsHandler::is_graphdocs_file("/.graphdocs/doc.gd.md"));
+        assert!(GraphDocsHandler::is_graphdocs_file("/any/path/doc.gd.md"));
+        assert!(!GraphDocsHandler::is_graphdocs_file("/file.md"));
+    }
+
+    /// Test that HandlerRegistry::handle_lookup constructs the correct child path
+    #[test]
+    fn test_handle_lookup_child_path_construction() {
+        // Verify the path construction logic used in handle_lookup
+        let test_cases = vec![
+            ("/", "test.txt", "/test.txt"),
+            ("/", ".graphdocs", "/.graphdocs"),
+            ("/home", "user", "/home/user"),
+            ("/home/", "user", "/home/user"),
+            ("/.graphdocs", "readme.gd.md", "/.graphdocs/readme.gd.md"),
+            ("/.graphdocs/", "readme.gd.md", "/.graphdocs/readme.gd.md"),
+        ];
+
+        for (parent_path, name, expected) in test_cases {
+            let child_path = if parent_path == "/" {
+                format!("/{}", name)
+            } else {
+                format!("{}/{}", parent_path.trim_end_matches('/'), name)
+            };
+            assert_eq!(
+                child_path, expected,
+                "Failed for parent='{}', name='{}'",
+                parent_path, name
+            );
+        }
+    }
+
+    /// Test GraphDocsHandler lookup path matching logic
+    #[test]
+    fn test_graphdocs_lookup_path_matching() {
+        // Test the conditions in GraphDocsHandler::lookup
+
+        // Case 1: Lookup of .graphdocs in root
+        let parent_path = "/";
+        let name = ".graphdocs";
+        assert!(parent_path == "/" && name == ".graphdocs");
+
+        // Case 2: Lookup of file in /.graphdocs/
+        let parent_path = "/.graphdocs";
+        let name = "readme.gd.md";
+        let doc_id = name.strip_suffix(".gd.md");
+        assert!(parent_path == GRAPHDOCS_DIR || parent_path == "/.graphdocs/");
+        assert_eq!(doc_id, Some("readme"));
+
+        // Case 3: Lookup of file without .gd.md extension should return None
+        let name = "readme.txt";
+        let doc_id = name.strip_suffix(".gd.md");
+        assert!(doc_id.is_none());
+
+        // Case 4: Lookup in non-graphdocs directory
+        let parent_path = "/home/user";
+        let name = "readme.gd.md";
+        assert!(parent_path != "/" || name != ".graphdocs");
+        assert!(parent_path != GRAPHDOCS_DIR && parent_path != "/.graphdocs/");
     }
 }

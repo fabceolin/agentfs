@@ -53,29 +53,34 @@ CREATE TABLE IF NOT EXISTS fs_journal (
 );
 
 -- Current filesystem state view (derived from journal)
+-- Uses FIRST_VALUE IGNORE NULLS to coalesce values from all events,
+-- taking the most recent non-NULL value for each column.
+-- Note: Explicit frame clause required for IGNORE NULLS to scan entire partition.
 CREATE OR REPLACE VIEW fs_current AS
-WITH ranked AS (
+WITH coalesced AS (
     SELECT
-        *,
+        inode,
+        FIRST_VALUE(parent IGNORE NULLS) OVER w as parent,
+        FIRST_VALUE(name IGNORE NULLS) OVER w as name,
+        FIRST_VALUE(mode IGNORE NULLS) OVER w as mode,
+        FIRST_VALUE(uid IGNORE NULLS) OVER w as uid,
+        FIRST_VALUE(gid IGNORE NULLS) OVER w as gid,
+        FIRST_VALUE(size IGNORE NULLS) OVER w as size,
+        FIRST_VALUE(nlink IGNORE NULLS) OVER w as nlink,
+        FIRST_VALUE(xattrs IGNORE NULLS) OVER w as xattrs,
+        event_time as mtime,
+        event_id as last_event_id,
+        actor_id,
+        session_id,
         ROW_NUMBER() OVER (PARTITION BY inode ORDER BY event_id DESC) as rn
     FROM fs_journal
     WHERE event_type != 'delete'
+    WINDOW w AS (PARTITION BY inode ORDER BY event_id DESC ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)
 )
 SELECT
-    inode,
-    parent,
-    name,
-    mode,
-    uid,
-    gid,
-    size,
-    nlink,
-    xattrs,
-    event_time as mtime,
-    event_id as last_event_id,
-    actor_id,
-    session_id
-FROM ranked
+    inode, parent, name, mode, uid, gid, size, nlink, xattrs,
+    mtime, last_event_id, actor_id, session_id
+FROM coalesced
 WHERE rn = 1
   AND inode NOT IN (
       SELECT inode FROM fs_journal WHERE event_type = 'delete'

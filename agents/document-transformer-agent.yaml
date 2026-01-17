@@ -1,5 +1,5 @@
 # agents/document-transformer-agent.yaml
-# RUN: tea run document-transformer-agent.yaml --input '{"document": {...}, "template": {...}}'
+# RUN: tea-rust run document-transformer-agent.yaml --gguf ~/.cache/tea/models/gemma-3-4b-it-Q4_K_M.gguf --input '...'
 
 name: document-transformer
 description: Transforms documents to match template structure using local LLM
@@ -14,9 +14,7 @@ state_schema:
 settings:
   llm:
     backend: local
-    model_path: ~/.cache/tea/models/gemma-3n-E4B-it-Q4_K_M.gguf
-    n_ctx: 4096  # Larger context for documents
-    n_gpu_layers: 0
+    n_ctx: 4096
 
 config:
   raise_exceptions: true
@@ -47,46 +45,35 @@ nodes:
       local doc = state.document or {}
       local template = state.template or {}
       local gaps = state.gaps or {}
-
       local template_sections = {}
       for _, s in ipairs(template.sections or {}) do
         if s.section_type == "heading" then
           table.insert(template_sections, s.content)
         end
       end
-
       local doc_content = {}
       for _, s in ipairs(doc.sections or {}) do
         table.insert(doc_content, s.content)
       end
-
-      local prompt = string.format([[Transform this document to match the template structure.
-
-Current Document Title: %s
-
-Missing Sections: %s
-
-Template Sections:
-%s
-
-Current Document Content:
-%s
-
-Output the transformed document in markdown format.
-Preserve existing content, add placeholders for missing sections.]],
-        doc.title or "",
-        table.concat(gaps.missing_sections or {}, ", "),
-        table.concat(template_sections, "\n"),
-        table.concat(doc_content, "\n\n")
-      )
+      local title = doc.title or ""
+      local missing_str = table.concat(gaps.missing_sections or {}, ", ")
+      local tmpl_str = table.concat(template_sections, "\n")
+      local doc_str = table.concat(doc_content, "\n\n")
+      local prompt = "Transform this document to match the template structure.\n\n"
+      prompt = prompt .. "Current Document Title: " .. title .. "\n\n"
+      prompt = prompt .. "Missing Sections: " .. missing_str .. "\n\n"
+      prompt = prompt .. "Template Sections:\n" .. tmpl_str .. "\n\n"
+      prompt = prompt .. "Current Document Content:\n" .. doc_str .. "\n\n"
+      prompt = prompt .. "Output the transformed document in markdown format.\n"
+      prompt = prompt .. "Preserve existing content, add placeholders for missing sections."
       return { transform_prompt = prompt }
 
   - name: transform_with_llm
     uses: llm.chat
     with:
-      backend: local
-      system: You are a document structure expert. Transform documents to match templates while preserving content.
-      prompt: "{{ state.transform_prompt }}"
+      messages:
+        - role: user
+          content: "{{ state.transform_prompt }}"
       max_tokens: 2048
       temperature: 0.2
     output: transform_result

@@ -295,22 +295,38 @@ impl Filesystem for AgentFSFuse {
         }
 
         // Normal lookup (no .source suffix)
-        let Some(path) = self.lookup_path(parent, name) else {
+        // First get the parent path for handler registry lookup
+        let Some(parent_path) = self.get_path(parent) else {
             reply.error(libc::ENOENT);
             return;
         };
-        let fs = self.fs.clone();
-        let (result, path) = self.runtime.block_on(async move {
-            let result = fs.lstat(&path).await;
-            (result, path)
-        });
+
+        // Try handler registry (enables virtual entries like /.graphdocs/)
+        let result = self
+            .runtime
+            .block_on(self.handler_registry.handle_lookup(&parent_path, &name_str));
+
         match result {
             Ok(Some(stats)) => {
+                // Handler provided stats - use them
                 let attr = fillattr(&stats, self.uid, self.gid);
-                self.add_path(attr.ino, path);
+                let child_path = if parent_path == "/" {
+                    format!("/{}", name_str)
+                } else {
+                    format!("{}/{}", parent_path.trim_end_matches('/'), name_str)
+                };
+                self.add_path(attr.ino, child_path);
+                tracing::debug!(
+                    "FUSE::lookup: handler returned stats for {} (ino={})",
+                    name_str,
+                    attr.ino
+                );
                 reply.entry(&TTL, &attr, 0);
             }
-            Ok(None) => reply.error(libc::ENOENT),
+            Ok(None) => {
+                // No handler found entry - return ENOENT
+                reply.error(libc::ENOENT);
+            }
             Err(e) => reply.error(error_to_errno(&e)),
         }
     }
@@ -557,6 +573,12 @@ impl Filesystem for AgentFSFuse {
 
         // Process entries with stats already available (no N+1 queries!)
         for entry in &entries {
+            // Skip . and .. since they're handled separately and caching them
+            // would overwrite the path cache with incorrect paths (e.g., "/..").
+            if entry.name == "." || entry.name == ".." {
+                continue;
+            }
+
             let entry_path = if path == "/" {
                 format!("/{}", entry.name)
             } else {
@@ -697,6 +719,12 @@ impl Filesystem for AgentFSFuse {
 
         // Add directory entries with their attributes
         for entry in &entries {
+            // Skip . and .. since they're handled separately above and caching them
+            // would overwrite the path cache with incorrect paths (e.g., "/..").
+            if entry.name == "." || entry.name == ".." {
+                continue;
+            }
+
             if offset <= offset_counter {
                 let entry_path = if path == "/" {
                     format!("/{}", entry.name)
@@ -1191,6 +1219,21 @@ impl Filesystem for AgentFSFuse {
             return;
         };
 
+        // Check if a handler can handle this path (virtual files).
+        // For handler-managed files, we don't need to open via the filesystem -
+        // the handler will handle reads directly.
+        let can_handle = self
+            .runtime
+            .block_on(async { self.handler_registry.can_handle_any(&path) });
+
+        if can_handle {
+            tracing::debug!("FUSE::open: handler-managed virtual file: {}", path);
+            // Return a dummy file handle - reads will be handled by the handler registry
+            let fh = self.alloc_fh();
+            reply.opened(fh, 0);
+            return;
+        }
+
         let fs = self.fs.clone();
         let path_clone = path.clone();
         let result = self
@@ -1408,12 +1451,10 @@ impl Filesystem for AgentFSFuse {
     /// Since writes go directly to the database, this is a no-op.
     fn flush(&mut self, _req: &Request, _ino: u64, fh: u64, _lock_owner: u64, reply: ReplyEmpty) {
         tracing::debug!("FUSE::flush: fh={}", fh);
-        let open_files = self.open_files.lock();
-        if open_files.contains_key(&fh) {
-            reply.ok();
-        } else {
-            reply.error(libc::EBADF);
-        }
+        // For handler-managed virtual files, the file handle won't be in open_files
+        // because we don't actually open a file. Always succeed for flush since
+        // there's nothing to flush for virtual files.
+        reply.ok();
     }
 
     /// Synchronizes file data to persistent storage using the file handle.
