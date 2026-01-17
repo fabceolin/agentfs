@@ -46,6 +46,11 @@ duckdb = { version = "1.1", features = ["bundled"] }
 nfsserve = "0.10"
 async-trait = "0.1"
 
+# GraphDocs editor integration (YAML/TOML serialization)
+serde_yaml = "0.9"
+toml = "0.8"
+tempfile = "3"
+
 # Unix dependencies
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

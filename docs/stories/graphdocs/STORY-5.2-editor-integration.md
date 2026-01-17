@@ -9,7 +9,7 @@
 | **ID** | STORY-5.2 |
 | **Epic** | EPIC-GRAPHDOCS-001 |
 | **Phase** | 5 - CLI and Management |
-| **Status** | Ready for Development |
+| **Status** | Done |
 | **Priority** | Low |
 | **File** | `cli/src/cmd/graphdocs.rs` |
 | **Dependencies** | STORY-5.1 |
@@ -22,9 +22,9 @@
 
 ## Acceptance Criteria
 
-- [ ] Open text editor with YAML/TOML of document
-- [ ] Parse and update graph on save
-- [ ] Validate structure
+- [x] Open text editor with YAML/TOML of document
+- [x] Parse and update graph on save
+- [x] Validate structure
 
 ## Technical Specification
 
@@ -632,3 +632,111 @@ tempfile = "3"
 3. **Validation**: Strict validation prevents invalid data
 4. **Diff Preview**: Shows changes before applying for safety
 5. **Cancellation**: User can cancel at the confirmation prompt
+
+---
+
+## Dev Agent Record
+
+### Agent Model Used
+- Claude Opus 4.5
+
+### Debug Log References
+- Fixed DuckDB FK constraint issue: gd_documents UPDATE with child records fails; worked around by updating fields individually
+- Fixed gd_sections table: doesn't have `updated_at` column (schema difference from spec)
+
+### Completion Notes
+- Edit command implemented with YAML/TOML serialization support
+- `handle_edit` opens document in text editor ($EDITOR or vim)
+- `validate_document` checks section types, heading levels, variable types, and duplicates
+- `diff_documents` compares old/new and lists changes
+- `apply_changes` applies modifications to database
+- 18 new tests added for edit functionality (validation, diff, load, apply, roundtrip)
+- All 119 CLI tests passing
+- Code formatted with `cargo fmt`
+- Clippy cannot run (requires nightly toolchain with ptrace features)
+
+### File List
+| File | Status | Description |
+|------|--------|-------------|
+| `cli/src/cmd/graphdocs.rs` | Modified | Added Edit command: EditArgs, EditFormat, EditableDocument structs, handle_edit, load_document_for_edit, validate_document, diff_documents, apply_changes, 18 new tests |
+| `cli/src/main.rs` | Modified | Added Edit command dispatch |
+| `cli/Cargo.toml` | Modified | Added serde_yaml, toml, tempfile dependencies |
+
+### Change Log
+| Date | Change |
+|------|--------|
+| 2026-01-16 | Story started |
+| 2026-01-16 | Added serde_yaml, toml, tempfile dependencies to Cargo.toml |
+| 2026-01-16 | Implemented EditArgs, EditFormat, and EditableDocument structs |
+| 2026-01-16 | Implemented load_document_for_edit, validate_document, diff_documents, apply_changes |
+| 2026-01-16 | Implemented handle_edit command handler |
+| 2026-01-16 | Wired up Edit subcommand in main.rs |
+| 2026-01-16 | Added 18 unit tests for edit functionality |
+| 2026-01-16 | Fixed DuckDB FK constraint issue with individual field updates |
+| 2026-01-16 | All 119 CLI tests passing |
+| 2026-01-16 | Story implementation complete |
+
+## QA Results
+
+### Review Date: 2026-01-16
+
+### Reviewed By: Quinn (Test Architect)
+
+### Code Quality Assessment
+
+Implementation is well-structured with clear separation of concerns. The edit workflow follows a safe pattern: load → serialize → edit → parse → validate → diff → confirm → apply. Code adheres to Rust idioms and uses proper error handling with `anyhow` and `.context()`.
+
+Key observations:
+- Parameterized queries protect against SQL injection
+- Document validation covers all edge cases (invalid types, duplicates, heading levels)
+- Diff preview before apply provides user safety
+- FK constraint workaround (individual field updates) is pragmatic and documented
+
+### Refactoring Performed
+
+None required - implementation quality is good.
+
+### Compliance Check
+
+- Coding Standards: ✓ Uses `anyhow` for errors, proper naming conventions, doc comments present
+- Project Structure: ✓ Code in correct location (`cli/src/cmd/graphdocs.rs`)
+- Testing Strategy: ✓ Unit tests inline with `#[cfg(test)]`, comprehensive coverage
+- All ACs Met: ✓ All 3 acceptance criteria verified with tests
+
+### Improvements Checklist
+
+- [x] Validation for section types, heading levels, variable types
+- [x] Duplicate detection for section IDs and variable names
+- [x] YAML/TOML roundtrip serialization
+- [x] Diff algorithm for all change types (add/remove/modify)
+- [x] Database integration with proper FK handling
+- [ ] Consider adding explicit transaction boundary in `apply_changes` (low priority - DuckDB auto-commits)
+- [ ] E2E test for `handle_edit` with mocked stdin/editor (acceptable to defer - requires test harness)
+
+### Security Review
+
+- ✓ SQL injection: Protected via `duckdb::params![]` parameterized queries
+- ✓ Editor command: Uses `$EDITOR` env var or "vim" fallback - not user-injectable
+- ✓ Temp files: `NamedTempFile` handles cleanup automatically
+- No security concerns identified.
+
+### Performance Considerations
+
+- Document loading is O(n) where n = sections + variables
+- Diff algorithm is O(n) with HashSet operations
+- Apply changes performs individual updates - acceptable for typical document sizes
+- No performance concerns for expected use cases.
+
+### Files Modified During Review
+
+None - no refactoring needed.
+
+### Gate Status
+
+Gate: PASS → docs/qa/gates/5.2-editor-integration.yml
+
+### Recommended Status
+
+✓ Ready for Done
+
+(Story owner decides final status)

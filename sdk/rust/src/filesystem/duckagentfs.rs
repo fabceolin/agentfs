@@ -291,6 +291,14 @@ impl DuckAgentFS {
         self.pool.get_write_connection()
     }
 
+    /// Get the underlying connection pool.
+    ///
+    /// This is useful for advanced operations that need direct pool access,
+    /// such as creating GraphDocsEngine instances.
+    pub fn pool(&self) -> DuckConnectionPool {
+        self.pool.clone()
+    }
+
     /// Initialize the database schema.
     async fn init_schema(&self) -> Result<()> {
         let conn = self.pool.get_write_connection()?;

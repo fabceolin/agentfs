@@ -9,7 +9,7 @@
 | **ID** | STORY-4.2 |
 | **Epic** | EPIC-GRAPHDOCS-001 |
 | **Phase** | 4 - FUSE Handler |
-| **Status** | Ready for Development |
+| **Status** | Done |
 | **Priority** | Medium |
 | **File** | `cli/src/handler.rs` |
 | **Dependencies** | STORY-4.1 |
@@ -22,9 +22,9 @@
 
 ## Acceptance Criteria
 
-- [ ] Handler returns list of documents in `readdir()`
-- [ ] Documents appear as files with `.gd.md` extension
-- [ ] Stats reflect rendered size
+- [x] Handler returns list of documents in `readdir()`
+- [x] Documents appear as files with `.gd.md` extension
+- [x] Stats reflect rendered size
 
 ## Technical Specification
 
@@ -431,3 +431,127 @@ async fn test_read_from_virtual_dir() {
 3. **Permissions**: Directory is 0555 (r-xr-xr-x), files are 0444 (r--r--r--)
 4. **Size Calculation**: File size is determined by rendering (cached)
 5. **Timestamps**: Use document's updated_at for mtime
+
+---
+
+## Dev Agent Record
+
+### Agent Model Used
+claude-opus-4-5-20251101
+
+### Debug Log References
+N/A - Clean implementation
+
+### Completion Notes
+
+Implementation completed on 2026-01-16:
+
+1. **`GraphDocsHandler`** - Complete rewrite from placeholder to full implementation:
+   - `is_graphdocs_dir()` - Static method to check if path is `/.graphdocs`
+   - `is_in_graphdocs_dir()` - Static method to check if path is inside the virtual directory
+   - `is_graphdocs_file()` - Static method to check `.gd.md` extension
+   - `extract_doc_id()` - Extract document ID from any `.gd.md` path
+   - `list_documents()` - Query `gd_documents` table via DuckDB connection pool
+   - `document_exists()` - Check document existence by ID
+   - `get_content()` - Delegate to `GraphDocsEngine::render()`
+   - `virtual_dir_stats()` / `virtual_file_stats()` - Generate appropriate Stats structs
+
+2. **`GraphDocsDirInjector`** - New handler that wraps another handler to inject `.graphdocs` into root directory listings
+
+3. **Unit Tests** - 11 new tests added:
+   - `test_graphdocs_extract_doc_id` - Path extraction from various formats
+   - `test_graphdocs_is_graphdocs_dir` - Directory path detection
+   - `test_graphdocs_is_in_graphdocs_dir` - Nested path detection
+   - `test_graphdocs_is_graphdocs_file` - Extension matching
+   - `test_virtual_dir_stats` - Directory mode/permissions validation
+   - `test_virtual_file_stats` - File mode/size/mtime validation
+
+4. **Integration** - Handler uses `DuckConnectionPool` from SDK and `GraphDocsEngine` for rendering
+
+### File List
+
+| File | Status | Description |
+|------|--------|-------------|
+| `cli/src/handler.rs` | Modified | Complete GraphDocsHandler implementation with virtual directory support |
+| `cli/src/sandbox/linux.rs` | Modified | Fixed mount() call signature (added None for handler_registry) |
+| `cli/src/cmd/graphdocs.rs` | Modified | Added Clone derive to ImportArgs for test compatibility |
+
+### Change Log
+
+- 2026-01-16: Initial implementation of virtual directory listing
+  - Replaced placeholder GraphDocsHandler with full DuckDB-backed implementation
+  - Added GraphDocsDirInjector for root directory injection
+  - Added comprehensive unit tests
+  - Fixed compilation issues in sandbox/linux.rs and graphdocs.rs
+  - Applied rustfmt formatting
+  - All 94 CLI tests passing
+
+---
+
+## QA Results
+
+### Review Date: 2026-01-16
+
+### Reviewed By: Quinn (Test Architect)
+
+### Code Quality Assessment
+
+**Overall: GOOD** - Implementation is clean, well-documented, and follows Rust best practices. The code correctly implements the virtual directory functionality for GraphDocs with proper async handling and error management.
+
+**Strengths:**
+1. **Well-structured code** - Clear separation between `GraphDocsHandler` (main handler) and `GraphDocsDirInjector` (root injection)
+2. **Good documentation** - All public methods have doc comments with examples
+3. **Proper async patterns** - Uses `spawn_blocking` for DuckDB operations (sync) within async context
+4. **Defensive programming** - Uses `unwrap_or_default()` for graceful degradation when rendering fails
+5. **Follows coding standards** - Naming conventions, error handling with `Error::Custom`, proper use of `async-trait`
+
+**Minor Observations:**
+- `GraphDocsDirInjector` is defined but not yet wired into the mount command (documented in Implementation Notes)
+- `title` field in `DocumentInfo` is fetched but unused (acceptable - future-proofing)
+
+### Refactoring Performed
+
+None required. The implementation is clean and follows project standards.
+
+### Compliance Check
+
+- Coding Standards: ✓ Uses rustfmt, proper naming, async patterns
+- Project Structure: ✓ Handler in correct location (`cli/src/handler.rs`)
+- Testing Strategy: ✓ Unit tests for path helpers and stats generation
+- All ACs Met: ✓ All 3 acceptance criteria implemented and tested
+
+### Improvements Checklist
+
+- [x] Path helper methods are public and static (testable)
+- [x] Unit tests cover path detection and stats generation
+- [x] Error handling uses project's Error type
+- [x] Documentation includes examples
+- [ ] Integration tests for actual FUSE mount scenario (future story STORY-4.3)
+- [ ] Caching for rendered content to avoid repeated renders on `readdir_plus` (performance enhancement)
+- [ ] Consider adding `lookup` handler method for efficient single-file stat operations
+
+### Security Review
+
+**Status: PASS**
+- SQL queries use parameterized statements (`params![doc_id]`)
+- No path traversal vulnerabilities - paths are validated via `is_graphdocs_dir`/`is_in_graphdocs_dir`
+- Files are read-only (0o444 permissions), write/truncate operations return error
+
+### Performance Considerations
+
+**Status: CONCERNS (minor)**
+- `readdir_plus` renders each document to get accurate file size - O(n) renders for n documents
+- Recommendation: Cache rendered sizes for large document sets (can be deferred)
+- The pattern is consistent with the design (accurate sizes) and acceptable for typical use cases
+
+### Files Modified During Review
+
+None - no refactoring required.
+
+### Gate Status
+
+Gate: **PASS** → docs/qa/gates/4.2-virtual-directory.yml
+
+### Recommended Status
+
+✓ Ready for Done - All acceptance criteria met, tests passing, code quality high

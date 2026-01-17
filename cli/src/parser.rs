@@ -1,5 +1,5 @@
 use crate::cmd::completions::Shell;
-use crate::cmd::graphdocs::{GraphDocsArgs, GraphDocsCommand};
+use crate::cmd::graphdocs::GraphDocsCommand;
 use agentfs_sdk::agentfs_dir;
 use clap::{Parser, Subcommand};
 use clap_complete::{
@@ -8,7 +8,9 @@ use clap_complete::{
 use std::path::{Path, PathBuf};
 
 // Re-export for use in main.rs
-pub use crate::cmd::graphdocs::{GraphDocsArgs as GraphDocsArgsExport, GraphDocsCommand as GraphDocsCommandExport};
+pub use crate::cmd::graphdocs::{
+    GraphDocsArgs as GraphDocsArgsExport, GraphDocsCommand as GraphDocsCommandExport,
+};
 
 #[derive(Parser, Debug)]
 #[command(name = "agentfs")]

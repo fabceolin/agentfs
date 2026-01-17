@@ -333,6 +333,29 @@ CREATE INDEX IF NOT EXISTS idx_gd_sections_parent ON gd_sections(parent_id);
 CREATE INDEX IF NOT EXISTS idx_gd_variables_document ON gd_variables(document_id);
 CREATE INDEX IF NOT EXISTS idx_gd_variables_name ON gd_variables(document_id, name);
 
+-- ---------------------------------------------------------------------------
+-- 5.3: GRAPHDOCS JOURNAL (Time-Travel Support)
+-- ---------------------------------------------------------------------------
+
+-- Sequence for GraphDocs event IDs
+CREATE SEQUENCE IF NOT EXISTS gd_event_seq START 1;
+
+-- Journal of all GraphDocs mutations (append-only for time-travel)
+CREATE TABLE IF NOT EXISTS gd_journal (
+    event_id    BIGINT PRIMARY KEY DEFAULT nextval('gd_event_seq'),
+    event_type  VARCHAR NOT NULL,      -- 'create', 'update', 'delete'
+    table_name  VARCHAR NOT NULL,      -- 'gd_documents', 'gd_sections', 'gd_variables', 'gd_edges'
+    record_id   VARCHAR NOT NULL,      -- Primary key of affected record
+    old_data    JSON,                  -- Previous state (for update/delete)
+    new_data    JSON,                  -- New state (for create/update)
+    event_time  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Indexes for efficient journal queries
+CREATE INDEX IF NOT EXISTS idx_gd_journal_record ON gd_journal(table_name, record_id);
+CREATE INDEX IF NOT EXISTS idx_gd_journal_time ON gd_journal(event_time);
+CREATE INDEX IF NOT EXISTS idx_gd_journal_event_id ON gd_journal(event_id);
+
 -- ============================================================================
 -- PART 6: HTTPFS REMOTE STORAGE SUPPORT
 -- ============================================================================

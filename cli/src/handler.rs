@@ -61,9 +61,13 @@
 //! ```
 
 use agentfs_sdk::error::{Error, Result};
+use agentfs_sdk::filesystem::duckagentfs::DuckConnectionPool;
+use agentfs_sdk::graphdocs::GraphDocsEngine;
 use agentfs_sdk::{DirEntry, FileSystem, Stats};
 use async_trait::async_trait;
+use duckdb::params;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 // ============================================================================
 // HANDLER RESULT TYPE
@@ -287,11 +291,7 @@ impl HandlerRegistry {
         for handler in &self.handlers {
             if handler.can_handle(path, None) {
                 if let Some(data) = handler.read(path, offset, size).await? {
-                    tracing::debug!(
-                        "Handler '{}' handled read for {}",
-                        handler.name(),
-                        path
-                    );
+                    tracing::debug!("Handler '{}' handled read for {}", handler.name(), path);
                     return Ok(data);
                 }
             }
@@ -310,11 +310,7 @@ impl HandlerRegistry {
         for handler in &self.handlers {
             if handler.can_handle(path, None) {
                 if let Some(stats) = handler.getattr(path).await? {
-                    tracing::debug!(
-                        "Handler '{}' handled getattr for {}",
-                        handler.name(),
-                        path
-                    );
+                    tracing::debug!("Handler '{}' handled getattr for {}", handler.name(), path);
                     return Ok(Some(stats));
                 }
             }
@@ -330,11 +326,7 @@ impl HandlerRegistry {
         for handler in &self.handlers {
             if handler.can_handle(path, None) {
                 if let Some(entries) = handler.readdir(path).await? {
-                    tracing::debug!(
-                        "Handler '{}' handled readdir for {}",
-                        handler.name(),
-                        path
-                    );
+                    tracing::debug!("Handler '{}' handled readdir for {}", handler.name(), path);
                     return Ok(Some(entries));
                 }
             }
@@ -484,153 +476,355 @@ impl FileHandler for DefaultHandler {
 }
 
 // ============================================================================
-// GRAPHDOCS HANDLER (CONCEPTUAL)
+// GRAPHDOCS HANDLER
 // ============================================================================
+
+/// Path for the virtual GraphDocs directory.
+pub const GRAPHDOCS_DIR: &str = "/.graphdocs";
+
+/// File extension for GraphDocs documents.
+const GRAPHDOCS_EXTENSION: &str = ".gd.md";
+
+/// Document info returned from database queries.
+#[derive(Debug, Clone)]
+pub struct DocumentInfo {
+    /// Document ID (also the filename without extension).
+    pub id: String,
+    /// Document title.
+    pub title: String,
+    /// Last updated timestamp (Unix epoch seconds).
+    pub updated_at: i64,
+}
 
 /// Handler for GraphDocs - rendering markdown from property graphs.
 ///
-/// # CONCEPTUAL IMPLEMENTATION
-///
-/// This handler intercepts reads to `.gd.md` files and renders them
-/// from the underlying property graph structure.
+/// This handler provides a virtual directory at `/.graphdocs/` containing all
+/// documents from the `gd_documents` table, rendered as `.gd.md` files.
 ///
 /// ## How it works
 ///
-/// 1. File `project-overview.gd.md` is accessed via FUSE
-/// 2. Handler extracts document ID: `project-overview`
-/// 3. Handler queries GraphDocs graph for document sections and variables
-/// 4. Handler renders markdown with variable substitution
-/// 5. Handler returns rendered content as file data
+/// 1. `ls /.graphdocs/` → lists all documents from `gd_documents` table
+/// 2. `cat /.graphdocs/readme.gd.md` → renders document `readme` via `GraphDocsEngine`
+/// 3. `stat /.graphdocs/readme.gd.md` → returns stats with rendered content size
 ///
 /// ## Example
 ///
 /// Given a document in the graph:
 ///
 /// ```sql
-/// -- Document
 /// INSERT INTO gd_documents (id, title) VALUES ('readme', 'README');
-///
-/// -- Sections
 /// INSERT INTO gd_sections (id, document_id, section_type, level, order_idx, content)
-/// VALUES
-///   ('s1', 'readme', 'heading', 1, 0, '# {{project_name}}'),
-///   ('s2', 'readme', 'paragraph', 1, 1, 'Version: {{version}}');
-///
-/// -- Variables
-/// INSERT INTO gd_variables (id, document_id, name, value)
-/// VALUES
-///   ('v1', 'readme', 'project_name', '"My Project"'),
-///   ('v2', 'readme', 'version', '"1.0.0"');
+/// VALUES ('s1', 'readme', 'heading', 1, 0, '# {{project_name}}');
+/// INSERT INTO gd_variables (id, document_id, name, value, var_type)
+/// VALUES ('v1', 'readme', 'project_name', '"My Project"', 'string');
 /// ```
 ///
-/// Reading `/docs/readme.gd.md` returns:
+/// The virtual directory shows:
+/// ```text
+/// ls /.graphdocs/
+/// readme.gd.md
 ///
-/// ```markdown
+/// cat /.graphdocs/readme.gd.md
 /// # My Project
-///
-/// Version: 1.0.0
 /// ```
 pub struct GraphDocsHandler {
-    // In real implementation:
-    // engine: GraphDocsEngine,
-    // fs: Arc<dyn FileSystem>, // For accessing the database
-    name: String,
-    extension: String,
+    /// The rendering engine that queries DuckDB and renders markdown.
+    engine: GraphDocsEngine,
+    /// Connection pool for direct database queries (document listing).
+    pool: DuckConnectionPool,
 }
 
 impl GraphDocsHandler {
-    /// Create a new GraphDocs handler.
+    /// Create a new GraphDocs handler with a DuckDB connection pool.
     ///
     /// # Arguments
     ///
-    /// * `extension` - File extension to handle (default: ".gd.md")
-    pub fn new() -> Self {
-        Self {
-            name: "graphdocs".to_string(),
-            extension: ".gd.md".to_string(),
+    /// * `pool` - DuckDB connection pool for querying `gd_documents`
+    pub fn new(pool: DuckConnectionPool) -> Self {
+        let engine = GraphDocsEngine::new(pool.clone());
+        Self { engine, pool }
+    }
+
+    /// Check if path is the GraphDocs virtual directory.
+    pub fn is_graphdocs_dir(path: &str) -> bool {
+        path == GRAPHDOCS_DIR || path == &format!("{}/", GRAPHDOCS_DIR)
+    }
+
+    /// Check if path is inside the GraphDocs directory.
+    pub fn is_in_graphdocs_dir(path: &str) -> bool {
+        path.starts_with(&format!("{}/", GRAPHDOCS_DIR))
+    }
+
+    /// Check if path is a GraphDocs file (ends with .gd.md).
+    pub fn is_graphdocs_file(path: &str) -> bool {
+        path.ends_with(GRAPHDOCS_EXTENSION)
+    }
+
+    /// Extract document ID from a path.
+    ///
+    /// Handles both:
+    /// - `/.graphdocs/readme.gd.md` → `readme`
+    /// - `/some/path/readme.gd.md` → `readme`
+    pub fn extract_doc_id(path: &str) -> Option<String> {
+        // First check if it's in the graphdocs directory
+        if Self::is_in_graphdocs_dir(path) {
+            return Self::extract_doc_id_from_dir_path(path);
         }
-    }
 
-    /// Set the file extension to handle.
-    pub fn with_extension(mut self, ext: impl Into<String>) -> Self {
-        self.extension = ext.into();
-        self
-    }
-
-    /// Extract document ID from path.
-    fn extract_doc_id(&self, path: &str) -> Option<String> {
+        // Otherwise extract from any .gd.md file
         let filename = path.rsplit('/').next()?;
-        filename.strip_suffix(&self.extension).map(String::from)
+        filename.strip_suffix(GRAPHDOCS_EXTENSION).map(String::from)
     }
 
-    /// Render a document from the graph.
-    async fn render_document(&self, _doc_id: &str) -> Result<String> {
-        // NOTE: Conceptual implementation
-        //
-        // In real implementation:
-        //
-        // 1. Query document: SELECT * FROM gd_documents WHERE id = ?
-        // 2. Query sections: SELECT * FROM gd_sections WHERE document_id = ? ORDER BY order_idx
-        // 3. Query variables: SELECT * FROM gd_variables WHERE document_id = ?
-        // 4. Build inheritance chain if base_template is set
-        // 5. Render each section with variable substitution
-        // 6. Return concatenated markdown
+    /// Extract doc_id from path like "/.graphdocs/readme.gd.md" -> "readme"
+    fn extract_doc_id_from_dir_path(path: &str) -> Option<String> {
+        let path = path.strip_prefix(GRAPHDOCS_DIR)?;
+        let path = path.strip_prefix('/')?;
 
-        Ok("# Rendered Document\n\nThis is a placeholder.".to_string())
+        // path is now "readme.gd.md"
+        path.strip_suffix(GRAPHDOCS_EXTENSION).map(String::from)
     }
 
-    /// Get virtual file stats for a document.
-    fn virtual_stats(&self, content_len: i64) -> Stats {
-        use std::time::{SystemTime, UNIX_EPOCH};
+    /// List all documents in the database.
+    ///
+    /// Returns document info sorted by ID.
+    pub async fn list_documents(&self) -> Result<Vec<DocumentInfo>> {
+        let pool = self.pool.clone();
 
+        tokio::task::spawn_blocking(move || {
+            let conn = pool.get_connection()?;
+
+            let mut stmt = conn
+                .prepare(
+                    r#"
+                SELECT id, title,
+                       COALESCE(
+                           EPOCH(updated_at),
+                           EPOCH(created_at),
+                           EPOCH(CURRENT_TIMESTAMP)
+                       ) as updated_epoch
+                FROM gd_documents
+                ORDER BY id
+                "#,
+                )
+                .map_err(|e| Error::Custom(format!("Failed to prepare documents query: {}", e)))?;
+
+            let docs = stmt
+                .query_map([], |row| {
+                    let id: String = row.get(0)?;
+                    let title: String = row.get(1)?;
+                    // DuckDB returns EPOCH as DOUBLE
+                    let updated_at: f64 = row.get(2)?;
+                    Ok(DocumentInfo {
+                        id,
+                        title,
+                        updated_at: updated_at as i64,
+                    })
+                })
+                .map_err(|e| Error::Custom(format!("Failed to query documents: {}", e)))?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| Error::Custom(format!("Failed to read document row: {}", e)))?;
+
+            Ok(docs)
+        })
+        .await
+        .map_err(|e| Error::Custom(format!("spawn_blocking join error: {}", e)))?
+    }
+
+    /// Check if a document exists by ID.
+    pub async fn document_exists(&self, doc_id: &str) -> Result<bool> {
+        let pool = self.pool.clone();
+        let doc_id = doc_id.to_string();
+
+        tokio::task::spawn_blocking(move || {
+            let conn = pool.get_connection()?;
+
+            let exists: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM gd_documents WHERE id = ?",
+                    params![doc_id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| Error::Custom(format!("Failed to check document existence: {}", e)))?;
+
+            Ok(exists > 0)
+        })
+        .await
+        .map_err(|e| Error::Custom(format!("spawn_blocking join error: {}", e)))?
+    }
+
+    /// Get the rendered content for a document.
+    pub async fn get_content(&self, doc_id: &str) -> Result<String> {
+        self.engine.render(doc_id).await
+    }
+
+    /// Get virtual directory stats.
+    fn virtual_dir_stats() -> Stats {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs() as i64;
 
         Stats {
-            ino: 0, // Will be assigned by registry
-            mode: 0o100444, // Regular file, read-only
-            nlink: 1,
+            ino: 0,        // FUSE will assign
+            mode: 0o40555, // Directory, read-only + execute
+            nlink: 2,
             uid: 0,
             gid: 0,
-            size: content_len,
+            size: 0,
             atime: now,
             mtime: now,
             ctime: now,
         }
     }
-}
 
-impl Default for GraphDocsHandler {
-    fn default() -> Self {
-        Self::new()
+    /// Get virtual file stats for a document.
+    fn virtual_file_stats(content_len: i64, mtime: i64) -> Stats {
+        Stats {
+            ino: 0,         // FUSE will assign
+            mode: 0o100444, // Regular file, read-only
+            nlink: 1,
+            uid: 0,
+            gid: 0,
+            size: content_len,
+            atime: mtime,
+            mtime,
+            ctime: mtime,
+        }
+    }
+
+    /// Get stats for the virtual directory.
+    async fn getattr_for_dir(&self) -> HandlerResult<Stats> {
+        Ok(Some(Self::virtual_dir_stats()))
+    }
+
+    /// Get stats for a document file (requires rendering to get size).
+    async fn getattr_for_doc(&self, doc_id: &str) -> HandlerResult<Stats> {
+        // Check if document exists
+        if !self.document_exists(doc_id).await? {
+            return Ok(None);
+        }
+
+        // Render to get content length
+        match self.get_content(doc_id).await {
+            Ok(content) => {
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64;
+
+                Ok(Some(Self::virtual_file_stats(content.len() as i64, now)))
+            }
+            Err(_) => Ok(None),
+        }
     }
 }
 
 #[async_trait]
 impl FileHandler for GraphDocsHandler {
     fn name(&self) -> &str {
-        &self.name
+        "graphdocs"
     }
 
     fn priority(&self) -> u32 {
-        50 // Higher than default
+        50 // Higher than default, handles before filesystem passthrough
     }
 
     fn can_handle(&self, path: &str, _stats: Option<&Stats>) -> bool {
-        path.ends_with(&self.extension)
+        Self::is_graphdocs_dir(path)
+            || Self::is_in_graphdocs_dir(path)
+            || Self::is_graphdocs_file(path)
+    }
+
+    async fn getattr(&self, path: &str) -> HandlerResult<Stats> {
+        // Handle virtual directory
+        if Self::is_graphdocs_dir(path) {
+            return self.getattr_for_dir().await;
+        }
+
+        // Handle files in graphdocs dir
+        if Self::is_in_graphdocs_dir(path) {
+            if let Some(doc_id) = Self::extract_doc_id_from_dir_path(path) {
+                return self.getattr_for_doc(&doc_id).await;
+            }
+        }
+
+        // Handle .gd.md files elsewhere
+        if let Some(doc_id) = Self::extract_doc_id(path) {
+            return self.getattr_for_doc(&doc_id).await;
+        }
+
+        Ok(None)
+    }
+
+    async fn readdir(&self, path: &str) -> HandlerResult<Vec<String>> {
+        if !Self::is_graphdocs_dir(path) {
+            return Ok(None);
+        }
+
+        // List all documents
+        let docs = self.list_documents().await?;
+
+        let mut entries = vec![".".to_string(), "..".to_string()];
+        for doc in docs {
+            entries.push(format!("{}{}", doc.id, GRAPHDOCS_EXTENSION));
+        }
+
+        Ok(Some(entries))
+    }
+
+    async fn readdir_plus(&self, path: &str) -> HandlerResult<Vec<DirEntry>> {
+        if !Self::is_graphdocs_dir(path) {
+            return Ok(None);
+        }
+
+        let docs = self.list_documents().await?;
+        let mut entries = Vec::new();
+
+        // Add . and ..
+        let dir_stats = Self::virtual_dir_stats();
+        entries.push(DirEntry {
+            name: ".".to_string(),
+            stats: dir_stats.clone(),
+        });
+
+        // Parent directory stats (root-like)
+        let parent_stats = Stats {
+            mode: 0o40755,
+            ..dir_stats
+        };
+        entries.push(DirEntry {
+            name: "..".to_string(),
+            stats: parent_stats,
+        });
+
+        // Add documents with rendered sizes
+        for doc in docs {
+            // Render each document to get accurate size
+            let content = self.get_content(&doc.id).await.unwrap_or_default();
+
+            entries.push(DirEntry {
+                name: format!("{}{}", doc.id, GRAPHDOCS_EXTENSION),
+                stats: Self::virtual_file_stats(content.len() as i64, doc.updated_at),
+            });
+        }
+
+        Ok(Some(entries))
     }
 
     async fn read(&self, path: &str, offset: u64, size: u64) -> HandlerResult<Vec<u8>> {
-        let doc_id = match self.extract_doc_id(path) {
+        let doc_id = match Self::extract_doc_id(path) {
             Some(id) => id,
             None => return Ok(None),
         };
 
-        let content = self.render_document(&doc_id).await?;
-        let bytes = content.as_bytes();
+        // Render the document
+        let content = match self.get_content(&doc_id).await {
+            Ok(c) => c,
+            Err(_) => return Ok(None),
+        };
 
+        let bytes = content.as_bytes();
         let start = offset as usize;
         let end = (offset + size) as usize;
 
@@ -641,26 +835,113 @@ impl FileHandler for GraphDocsHandler {
         Ok(Some(bytes[start..end.min(bytes.len())].to_vec()))
     }
 
-    async fn getattr(&self, path: &str) -> HandlerResult<Stats> {
-        let doc_id = match self.extract_doc_id(path) {
-            Some(id) => id,
-            None => return Ok(None),
-        };
-
-        // NOTE: In real implementation, check if document exists in database
-        let _ = doc_id;
-
-        // Return placeholder stats
-        let content = "# Placeholder\n";
-        Ok(Some(self.virtual_stats(content.len() as i64)))
-    }
-
     async fn write(&self, _path: &str, _offset: u64, _data: &[u8]) -> HandlerResult<usize> {
         // GraphDocs files are read-only (rendered from graph)
-        // To edit, modify the underlying graph structure
         Err(Error::Custom(
             "GraphDocs files are read-only. Edit the underlying graph instead.".into(),
         ))
+    }
+
+    async fn truncate(&self, _path: &str, _size: u64) -> HandlerResult<()> {
+        // GraphDocs files are read-only
+        Err(Error::Custom(
+            "GraphDocs files are read-only. Edit the underlying graph instead.".into(),
+        ))
+    }
+}
+
+// ============================================================================
+// ROOT DIRECTORY INJECTOR
+// ============================================================================
+
+/// Handler that injects `.graphdocs` into root directory listings.
+///
+/// This handler intercepts `readdir()` calls on the root directory
+/// and adds `.graphdocs` to the list of entries, making the virtual
+/// directory discoverable via `ls /`.
+pub struct GraphDocsDirInjector {
+    inner: Arc<dyn FileHandler>,
+}
+
+impl GraphDocsDirInjector {
+    /// Create a new injector wrapping another handler.
+    pub fn new(inner: Arc<dyn FileHandler>) -> Self {
+        Self { inner }
+    }
+}
+
+#[async_trait]
+impl FileHandler for GraphDocsDirInjector {
+    fn name(&self) -> &str {
+        "graphdocs-injector"
+    }
+
+    fn priority(&self) -> u32 {
+        5 // Before GraphDocsHandler (50) so we can inject before listing
+    }
+
+    fn can_handle(&self, path: &str, _stats: Option<&Stats>) -> bool {
+        path == "/" // Only handle root
+    }
+
+    async fn readdir(&self, path: &str) -> HandlerResult<Vec<String>> {
+        if path != "/" {
+            return Ok(None);
+        }
+
+        // Get real entries from inner handler
+        let mut entries = self.inner.readdir(path).await?.unwrap_or_default();
+
+        // Inject .graphdocs if not already present
+        let graphdocs_name = GRAPHDOCS_DIR.strip_prefix('/').unwrap_or(".graphdocs");
+        if !entries.contains(&graphdocs_name.to_string()) {
+            entries.push(graphdocs_name.to_string());
+        }
+
+        Ok(Some(entries))
+    }
+
+    async fn readdir_plus(&self, path: &str) -> HandlerResult<Vec<DirEntry>> {
+        if path != "/" {
+            return Ok(None);
+        }
+
+        // Get real entries from inner handler
+        let mut entries = self.inner.readdir_plus(path).await?.unwrap_or_default();
+
+        // Check if .graphdocs already present
+        let graphdocs_name = GRAPHDOCS_DIR.strip_prefix('/').unwrap_or(".graphdocs");
+        let has_graphdocs = entries.iter().any(|e| e.name == graphdocs_name);
+
+        if !has_graphdocs {
+            entries.push(DirEntry {
+                name: graphdocs_name.to_string(),
+                stats: GraphDocsHandler::virtual_dir_stats(),
+            });
+        }
+
+        Ok(Some(entries))
+    }
+
+    // Delegate other operations - return None to fall through
+    async fn read(&self, _path: &str, _offset: u64, _size: u64) -> HandlerResult<Vec<u8>> {
+        Ok(None)
+    }
+
+    async fn getattr(&self, _path: &str) -> HandlerResult<Stats> {
+        Ok(None)
+    }
+
+    async fn write(&self, _path: &str, _offset: u64, _data: &[u8]) -> HandlerResult<usize> {
+        Ok(None)
+    }
+
+    async fn truncate(&self, _path: &str, _size: u64) -> HandlerResult<()> {
+        Ok(None)
+    }
+
+    async fn readlink(&self, _path: &str) -> HandlerResult<String> {
+        Ok(None)
     }
 }
 
@@ -774,17 +1055,78 @@ mod tests {
 
     #[test]
     fn test_graphdocs_extract_doc_id() {
-        let handler = GraphDocsHandler::new();
-
+        // Test static method - no instance needed
         assert_eq!(
-            handler.extract_doc_id("/docs/readme.gd.md"),
+            GraphDocsHandler::extract_doc_id("/docs/readme.gd.md"),
             Some("readme".to_string())
         );
         assert_eq!(
-            handler.extract_doc_id("/a/b/project-overview.gd.md"),
+            GraphDocsHandler::extract_doc_id("/a/b/project-overview.gd.md"),
             Some("project-overview".to_string())
         );
-        assert_eq!(handler.extract_doc_id("/docs/readme.md"), None);
+        assert_eq!(GraphDocsHandler::extract_doc_id("/docs/readme.md"), None);
+
+        // Test paths in virtual directory
+        assert_eq!(
+            GraphDocsHandler::extract_doc_id("/.graphdocs/readme.gd.md"),
+            Some("readme".to_string())
+        );
+        assert_eq!(
+            GraphDocsHandler::extract_doc_id("/.graphdocs/api-reference.gd.md"),
+            Some("api-reference".to_string())
+        );
+    }
+
+    #[test]
+    fn test_graphdocs_is_graphdocs_dir() {
+        assert!(GraphDocsHandler::is_graphdocs_dir("/.graphdocs"));
+        assert!(GraphDocsHandler::is_graphdocs_dir("/.graphdocs/"));
+        assert!(!GraphDocsHandler::is_graphdocs_dir(
+            "/.graphdocs/file.gd.md"
+        ));
+        assert!(!GraphDocsHandler::is_graphdocs_dir("/other"));
+    }
+
+    #[test]
+    fn test_graphdocs_is_in_graphdocs_dir() {
+        assert!(GraphDocsHandler::is_in_graphdocs_dir(
+            "/.graphdocs/readme.gd.md"
+        ));
+        assert!(GraphDocsHandler::is_in_graphdocs_dir("/.graphdocs/sub/dir"));
+        assert!(!GraphDocsHandler::is_in_graphdocs_dir("/.graphdocs"));
+        assert!(!GraphDocsHandler::is_in_graphdocs_dir(
+            "/other/readme.gd.md"
+        ));
+    }
+
+    #[test]
+    fn test_graphdocs_is_graphdocs_file() {
+        assert!(GraphDocsHandler::is_graphdocs_file("/any/path/file.gd.md"));
+        assert!(GraphDocsHandler::is_graphdocs_file("file.gd.md"));
+        assert!(!GraphDocsHandler::is_graphdocs_file("/file.md"));
+        assert!(!GraphDocsHandler::is_graphdocs_file("/file.gd"));
+    }
+
+    #[test]
+    fn test_virtual_dir_stats() {
+        let stats = GraphDocsHandler::virtual_dir_stats();
+        // Should be directory (mode starts with 0o40xxx)
+        assert_eq!(stats.mode & 0o170000, 0o40000);
+        // Should have read + execute permissions
+        assert_eq!(stats.mode & 0o555, 0o555);
+        assert_eq!(stats.nlink, 2);
+    }
+
+    #[test]
+    fn test_virtual_file_stats() {
+        let stats = GraphDocsHandler::virtual_file_stats(1024, 1234567890);
+        // Should be regular file (mode starts with 0o10xxxx)
+        assert_eq!(stats.mode & 0o170000, 0o100000);
+        // Should be read-only (0o444)
+        assert_eq!(stats.mode & 0o777, 0o444);
+        assert_eq!(stats.size, 1024);
+        assert_eq!(stats.mtime, 1234567890);
+        assert_eq!(stats.nlink, 1);
     }
 
     #[test]

@@ -254,18 +254,48 @@ fn main() {
                 }
             }
         },
-        Command::GraphDocs { id_or_path, command } => {
+        Command::GraphDocs {
+            id_or_path,
+            command,
+        } => {
             let rt = get_runtime();
             if let Err(e) = rt.block_on(async {
                 match command {
                     // Conform doesn't need DuckAgentFS - works directly with files
-                    GraphDocsCommand::Conform(args) => {
-                        cmd::graphdocs::handle_conform(args).await
-                    }
+                    GraphDocsCommand::Conform(args) => cmd::graphdocs::handle_conform(args).await,
                     // Other commands need DuckAgentFS
                     _ => {
                         let fs = cmd::graphdocs::open_duckagentfs(&id_or_path).await?;
                         match command {
+                            // New management commands
+                            GraphDocsCommand::List(args) => {
+                                cmd::graphdocs::handle_list(&fs, args).await
+                            }
+                            GraphDocsCommand::Create(args) => {
+                                cmd::graphdocs::handle_create(&fs, args).await
+                            }
+                            GraphDocsCommand::Delete(args) => {
+                                cmd::graphdocs::handle_delete(&fs, args).await
+                            }
+                            GraphDocsCommand::Show(args) => {
+                                cmd::graphdocs::handle_show(&fs, args).await
+                            }
+                            GraphDocsCommand::AddSection(args) => {
+                                cmd::graphdocs::handle_add_section(&fs, args).await
+                            }
+                            GraphDocsCommand::RemoveSection(args) => {
+                                cmd::graphdocs::handle_remove_section(&fs, args).await
+                            }
+                            GraphDocsCommand::SetVar(args) => {
+                                cmd::graphdocs::handle_set_var(&fs, args).await
+                            }
+                            GraphDocsCommand::GetVar(args) => {
+                                cmd::graphdocs::handle_get_var(&fs, args).await
+                            }
+                            GraphDocsCommand::ListVars(args) => {
+                                cmd::graphdocs::handle_list_vars(&fs, args).await
+                            }
+                            // Existing commands
                             GraphDocsCommand::Import(args) => {
                                 cmd::graphdocs::handle_import(&fs, args).await
                             }
@@ -275,6 +305,15 @@ fn main() {
                             GraphDocsCommand::Export(args) => {
                                 cmd::graphdocs::handle_export(&fs, args).await
                             }
+                            GraphDocsCommand::Render(args) => {
+                                cmd::graphdocs::handle_render(&fs, args).await
+                            }
+                            GraphDocsCommand::History(args) => {
+                                cmd::graphdocs::handle_history(&fs, args).await
+                            }
+                            GraphDocsCommand::Edit(args) => {
+                                cmd::graphdocs::handle_edit(&fs, args).await
+                            }
                             GraphDocsCommand::Conform(_) => unreachable!(),
                         }
                     }
@@ -283,7 +322,7 @@ fn main() {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }
-        },
+        }
     }
 }
 

@@ -1,6 +1,7 @@
 pub mod agent_transformer;
 pub mod conformance;
 pub mod embedding_matcher;
+pub mod engine;
 pub mod llm_converter;
 pub mod normalizer;
 pub mod openai;
@@ -56,3 +57,5 @@ pub use relationships::{
 pub use renderer::{
     validate_include_path, DocumentContext, RenderConfig, RenderError, TemplateProcessor,
 };
+
+pub use engine::{DocumentEvent, GraphDocsEngine, RenderedDocument};

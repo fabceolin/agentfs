@@ -9,7 +9,7 @@
 | **ID** | STORY-3.1 |
 | **Epic** | EPIC-GRAPHDOCS-001 |
 | **Phase** | 3 - Rendering Engine |
-| **Status** | Ready for Development |
+| **Status** | Done |
 | **Priority** | High |
 | **File** | `sdk/rust/src/graphdocs/engine.rs` |
 | **Dependencies** | STORY-1.1, STORY-1.2 |
@@ -22,11 +22,11 @@
 
 ## Acceptance Criteria
 
-- [ ] Resolve template inheritance
-- [ ] Load variables (with inheritance)
-- [ ] Order sections by `order_idx`
-- [ ] Substitute `{{variable}}` with values
-- [ ] Generate formatted Markdown
+- [x] Resolve template inheritance
+- [x] Load variables (with inheritance)
+- [x] Order sections by `order_idx`
+- [x] Substitute `{{variable}}` with values
+- [x] Generate formatted Markdown
 
 ## Technical Specification
 
@@ -497,3 +497,109 @@ async fn test_missing_variables() {
 2. **Cycle Detection**: Prevents infinite loops in template inheritance
 3. **Variable Types**: JSON values support strings, numbers, booleans, arrays
 4. **Missing Variables**: Detected but not fatal - allows partial rendering
+
+---
+
+## Dev Agent Record
+
+### Agent Model Used
+Claude Opus 4.5 (claude-opus-4-5-20251101)
+
+### Debug Log References
+N/A - No blocking issues encountered
+
+### Completion Notes
+- Implemented `GraphDocsEngine` with full template inheritance support
+- Adapted story's async API design to work with DuckDB's synchronous connection pool using `spawn_blocking`
+- Added circular inheritance detection with MAX_DEPTH (10) limit
+- Variable substitution supports all JSON types: string, number, boolean, array, object
+- Arrays render as Markdown list items
+- Section types supported: heading, paragraph, code, blockquote, list, hr
+- All 11 tests pass covering: simple render, variable substitution, missing variables, template inheritance, variable override, section ordering, circular inheritance detection, document not found, get_variables, section types, array variables
+
+### File List
+| File | Action |
+|------|--------|
+| `sdk/rust/src/graphdocs/engine.rs` | Created |
+| `sdk/rust/src/graphdocs/mod.rs` | Modified (added engine module export) |
+
+### Change Log
+| Date | Change |
+|------|--------|
+| 2026-01-16 | Initial implementation of GraphDocsEngine with all acceptance criteria met |
+
+---
+
+## QA Results
+
+### Review Date: 2026-01-16
+
+### Reviewed By: Quinn (Test Architect)
+
+### Code Quality Assessment
+
+**Overall: EXCELLENT** - Clean, well-documented Rust implementation with comprehensive test coverage.
+
+**Strengths:**
+- Excellent documentation with module-level `//!` docs and `///` doc comments on all public APIs
+- Proper async/sync pattern using `spawn_blocking` to bridge DuckDB's synchronous API
+- Clean separation of concerns between public async methods and private sync helpers
+- Comprehensive error handling with descriptive error messages
+- Well-structured test suite with isolated in-memory databases
+
+**Design Decisions (Appropriate):**
+- Adapted story's async API design to work with DuckDB's synchronous nature
+- Used `#[allow(dead_code)]` for `is_inherited` field - reserved for future use
+- `render_at()` returns clear error indicating STORY-3.3 dependency
+
+### Refactoring Performed
+
+None required - code quality is production-ready.
+
+### Compliance Check
+
+- Coding Standards: ✓ Follows Rust 2021 edition, proper naming conventions, `rustfmt` compliant
+- Project Structure: ✓ Module placed in `sdk/rust/src/graphdocs/engine.rs`, exports in `mod.rs`
+- Testing Strategy: ✓ Unit tests inline with `#[cfg(test)]`, 11 comprehensive tests
+- All ACs Met: ✓ All 5 acceptance criteria verified with test coverage
+
+### Improvements Checklist
+
+- [x] All acceptance criteria implemented with tests
+- [x] Documentation complete with examples
+- [x] Error handling comprehensive
+- [x] Parameterized SQL queries (no injection vulnerabilities)
+- [x] Connection pooling used correctly
+- [ ] **Future**: Consider caching compiled Regex in `render_section()` (minor optimization)
+- [ ] **Future**: `render_at()` implementation deferred to STORY-3.3
+
+### Security Review
+
+**Status: PASS**
+
+- ✓ Parameterized queries used throughout (`params![]` macro)
+- ✓ No raw SQL string concatenation
+- ✓ Document IDs validated through database lookups
+- ✓ Circular inheritance detection prevents DoS via infinite loops
+- ✓ MAX_DEPTH limit prevents stack overflow in deep inheritance chains
+
+### Performance Considerations
+
+**Status: PASS**
+
+- ✓ Uses `spawn_blocking` to avoid blocking async runtime on DB operations
+- ✓ Connection pooling via `DuckConnectionPool`
+- ✓ Sections collected once and sorted in memory (efficient for typical document sizes)
+- ⚠ Regex compiled per `render_section()` call - acceptable for current use, but could be cached if rendering large documents frequently
+
+### Files Modified During Review
+
+None - no refactoring required.
+
+### Gate Status
+
+Gate: **PASS** → `docs/qa/gates/3.1-graphdocs-engine.yml`
+
+### Recommended Status
+
+**✓ Ready for Done** - All acceptance criteria met, comprehensive test coverage, clean code quality. Story owner can proceed to mark as Done.

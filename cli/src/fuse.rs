@@ -125,7 +125,11 @@ impl StubTemplateRenderer {
     ///
     /// - `Ok(rendered)` - Rendered content (currently just raw content)
     /// - `Err(message)` - Error message for graceful degradation (AC13)
-    pub fn render_with_timeout(&self, content: &[u8], timeout: Duration) -> Result<Vec<u8>, String> {
+    pub fn render_with_timeout(
+        &self,
+        content: &[u8],
+        timeout: Duration,
+    ) -> Result<Vec<u8>, String> {
         let _ = timeout; // Timeout will be used when real rendering is implemented
 
         // Stub: Check for Tera syntax and add a warning comment if found
@@ -179,7 +183,6 @@ struct AgentFSFuse {
     // ─────────────────────────────────────────────────────────────
     // Phase 2: Tera Rendering Mode (STORY-5.4)
     // ─────────────────────────────────────────────────────────────
-
     /// Extended attribute cache for `user.agentfs.raw` mode.
     /// Maps inode -> raw_mode (true = raw mode, false = rendered mode).
     /// Files not in this cache default to rendered mode (raw=false) for existing files,
@@ -247,7 +250,10 @@ impl Filesystem for AgentFSFuse {
         if name_str.ends_with(SOURCE_SUFFIX) {
             // Strip .source suffix and look up the real file
             let real_name = &name_str[..name_str.len() - SOURCE_SUFFIX.len()];
-            tracing::debug!("FUSE::lookup: .source suffix detected, looking up real file: {}", real_name);
+            tracing::debug!(
+                "FUSE::lookup: .source suffix detected, looking up real file: {}",
+                real_name
+            );
 
             let Some(path) = self.lookup_path(parent, &std::ffi::OsString::from(real_name)) else {
                 reply.error(libc::ENOENT);
@@ -275,7 +281,11 @@ impl Filesystem for AgentFSFuse {
                     // Track this as a source inode
                     self.source_inodes.lock().insert(source_ino);
 
-                    tracing::debug!("FUSE::lookup: returning source inode {} for {}", source_ino, name_str);
+                    tracing::debug!(
+                        "FUSE::lookup: returning source inode {} for {}",
+                        source_ino,
+                        name_str
+                    );
                     reply.entry(&TTL, &attr, 0);
                 }
                 Ok(None) => reply.error(libc::ENOENT),
@@ -1242,9 +1252,9 @@ impl Filesystem for AgentFSFuse {
                 // Rendered mode: read full content, render, return requested slice
                 tracing::debug!("FUSE::read: rendering markdown file: {}", path);
 
-                let result = self
-                    .runtime
-                    .block_on(self.handler_registry.handle_read(&path, 0, u64::MAX));
+                let result =
+                    self.runtime
+                        .block_on(self.handler_registry.handle_read(&path, 0, u64::MAX));
 
                 match result {
                     Ok(raw_data) => {
@@ -1265,9 +1275,11 @@ impl Filesystem for AgentFSFuse {
             }
 
             // Raw mode or non-markdown: read directly
-            let result = self
-                .runtime
-                .block_on(self.handler_registry.handle_read(&path, offset as u64, size as u64));
+            let result = self.runtime.block_on(self.handler_registry.handle_read(
+                &path,
+                offset as u64,
+                size as u64,
+            ));
 
             match result {
                 Ok(data) => {
@@ -1505,7 +1517,12 @@ impl Filesystem for AgentFSFuse {
         reply: ReplyEmpty,
     ) {
         let name_str = name.to_string_lossy();
-        tracing::debug!("FUSE::setxattr: ino={}, name={}, value={:?}", ino, name_str, value);
+        tracing::debug!(
+            "FUSE::setxattr: ino={}, name={}, value={:?}",
+            ino,
+            name_str,
+            value
+        );
 
         // Handle user.agentfs.raw attribute
         if name_str == XATTR_RAW_MODE {
@@ -1519,7 +1536,11 @@ impl Filesystem for AgentFSFuse {
                     b'0' | 0 => false, // Rendered mode
                     _ => {
                         // Invalid value - treat as rendered mode
-                        tracing::warn!("FUSE::setxattr: invalid value for {}: {:?}", XATTR_RAW_MODE, value);
+                        tracing::warn!(
+                            "FUSE::setxattr: invalid value for {}: {:?}",
+                            XATTR_RAW_MODE,
+                            value
+                        );
                         false
                     }
                 }
@@ -1527,7 +1548,11 @@ impl Filesystem for AgentFSFuse {
 
             let real_ino = self.get_real_inode(ino);
             self.set_raw_mode(real_ino, raw_mode);
-            tracing::debug!("FUSE::setxattr: set raw_mode={} for ino={}", raw_mode, real_ino);
+            tracing::debug!(
+                "FUSE::setxattr: set raw_mode={} for ino={}",
+                raw_mode,
+                real_ino
+            );
             reply.ok();
             return;
         }
@@ -1542,16 +1567,14 @@ impl Filesystem for AgentFSFuse {
     /// Handles `user.agentfs.raw` for querying raw/rendered mode.
     /// - Returns "0" for rendered mode (default)
     /// - Returns "1" for raw mode
-    fn getxattr(
-        &mut self,
-        _req: &Request,
-        ino: u64,
-        name: &OsStr,
-        size: u32,
-        reply: ReplyXattr,
-    ) {
+    fn getxattr(&mut self, _req: &Request, ino: u64, name: &OsStr, size: u32, reply: ReplyXattr) {
         let name_str = name.to_string_lossy();
-        tracing::debug!("FUSE::getxattr: ino={}, name={}, size={}", ino, name_str, size);
+        tracing::debug!(
+            "FUSE::getxattr: ino={}, name={}, size={}",
+            ino,
+            name_str,
+            size
+        );
 
         // Handle user.agentfs.raw attribute
         if name_str == XATTR_RAW_MODE {
@@ -1847,7 +1870,10 @@ impl AgentFSFuse {
     /// Returns rendered content, or graceful error content if rendering fails (AC13).
     /// Respects the render timeout (AC14).
     fn render_content(&self, raw_content: &[u8]) -> Vec<u8> {
-        match self.template_renderer.render_with_timeout(raw_content, RENDER_TIMEOUT) {
+        match self
+            .template_renderer
+            .render_with_timeout(raw_content, RENDER_TIMEOUT)
+        {
             Ok(rendered) => rendered,
             Err(err_msg) => {
                 // AC13: Return graceful error content, not crash
@@ -1998,8 +2024,12 @@ mod tests {
         assert!(StubTemplateRenderer::has_template_syntax(b"{{ variable }}"));
         assert!(StubTemplateRenderer::has_template_syntax(b"{% if true %}"));
         assert!(StubTemplateRenderer::has_template_syntax(b"{# comment #}"));
-        assert!(!StubTemplateRenderer::has_template_syntax(b"# Plain markdown"));
-        assert!(!StubTemplateRenderer::has_template_syntax(b"No special chars"));
+        assert!(!StubTemplateRenderer::has_template_syntax(
+            b"# Plain markdown"
+        ));
+        assert!(!StubTemplateRenderer::has_template_syntax(
+            b"No special chars"
+        ));
     }
 
     // ─────────────────────────────────────────────────────────────
