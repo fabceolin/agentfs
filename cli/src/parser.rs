@@ -143,6 +143,29 @@ pub enum Command {
         /// Group ID to report for all files (defaults to current group)
         #[arg(long)]
         gid: Option<u32>,
+
+        // TEA Conformance Options (STORY-7.4)
+        /// Enable TEA-based template conformance handling for writes.
+        /// When enabled, writes to .md files in template directories trigger
+        /// background conformance transformation.
+        #[arg(long)]
+        tea_conformance: bool,
+
+        /// Directory containing TEA agent definitions (default: ./agents)
+        #[arg(long, value_name = "DIR")]
+        tea_agents_dir: Option<std::path::PathBuf>,
+
+        /// TEA overlay file for LLM configuration (Claude API, GGUF path, etc.)
+        #[arg(long, value_name = "FILE")]
+        tea_overlay: Option<std::path::PathBuf>,
+
+        /// Path to local GGUF model for TEA conformance
+        #[arg(long, value_name = "FILE")]
+        tea_model_path: Option<std::path::PathBuf>,
+
+        /// Timeout in seconds for conformance operations (default: 30)
+        #[arg(long, default_value = "30")]
+        tea_timeout: u64,
     },
     /// Show differences between base filesystem and delta (overlay mode only)
     Diff {

@@ -1,0 +1,37 @@
+# Overlay for document-conformance-agent to use Claude shell provider
+# Usage: tea-python run agents/document-conformance-agent.yaml -f agents/overlay/claude-conformance.yaml --input '...'
+
+settings:
+  llm:
+    backend: shell
+    shell_provider: claude
+
+nodes:
+  - name: llm_classify
+    uses: llm.chat
+    with:
+      provider: shell
+      shell_provider: claude
+      messages:
+        - role: user
+          content: |
+            Classify this status into exactly one of: Draft, Approved, InProgress, Review, Done
+
+            Input: "{{ state.raw_status }}"
+
+            Output only the single word classification:
+      max_tokens: 8
+      temperature: 0.0
+    output: llm_response
+
+  - name: parse_llm_response
+    language: lua
+    run: |
+      local resp = state.llm_response or {}
+      local content = resp.content or "Draft"
+      local status = content:match("^%s*(%w+)") or "Draft"
+      local valid = { Draft=true, Approved=true, InProgress=true, Review=true, Done=true }
+      if not valid[status] then
+        status = "Draft"
+      end
+      return { normalized_status = status }

@@ -12,7 +12,10 @@ use std::{
 #[cfg(target_os = "linux")]
 use crate::fuse::FuseMountOptions;
 #[cfg(target_os = "linux")]
-use crate::handler::{DefaultHandler, GraphDocsDirInjector, GraphDocsHandler, HandlerRegistry};
+use crate::handler::{
+    ConformanceConfig, ConformanceReadHandler, ConformanceWriteHandler, DefaultHandler,
+    GraphDocsDirInjector, GraphDocsHandler, HandlerRegistry,
+};
 
 /// Arguments for the mount command.
 #[derive(Debug, Clone)]
@@ -31,6 +34,16 @@ pub struct MountArgs {
     pub uid: Option<u32>,
     /// Group ID to report for all files (defaults to current group).
     pub gid: Option<u32>,
+    /// Enable TEA-based conformance handling.
+    pub tea_conformance: bool,
+    /// Directory containing TEA agent definitions.
+    pub tea_agents_dir: Option<PathBuf>,
+    /// TEA overlay file for LLM configuration.
+    pub tea_overlay: Option<PathBuf>,
+    /// Path to local GGUF model for TEA.
+    pub tea_model_path: Option<PathBuf>,
+    /// Timeout in seconds for conformance operations.
+    pub tea_timeout: u64,
 }
 
 /// Resolve database path from ID or path string.
@@ -100,34 +113,53 @@ fn has_graphdocs_tables(pool: &DuckConnectionPool) -> bool {
     matches!(result, Ok(count) if count > 0)
 }
 
-/// Create handler registry with GraphDocs support if available.
+/// Create handler registry with GraphDocs and conformance support.
 #[cfg(target_os = "linux")]
 fn create_handler_registry(
     fs: Arc<dyn FileSystem>,
     pool: &DuckConnectionPool,
+    conformance_config: Option<ConformanceConfig>,
+    runtime: tokio::runtime::Handle,
 ) -> HandlerRegistry {
-    let default_handler = Arc::new(DefaultHandler::new(fs));
+    let default_handler = Arc::new(DefaultHandler::new(fs.clone()));
+
+    // Create registry with default handler
+    let mut registry = HandlerRegistry::new(default_handler.clone());
 
     // Check if GraphDocs tables exist
     if has_graphdocs_tables(pool) {
         tracing::info!("GraphDocs tables detected, registering handlers");
-
-        // Create registry with default handler
-        let mut registry = HandlerRegistry::new(default_handler.clone());
 
         // Register GraphDocsHandler for /.graphdocs/ virtual directory
         let graphdocs_handler = Arc::new(GraphDocsHandler::new(pool.clone()));
         registry.register(graphdocs_handler);
 
         // Register GraphDocsDirInjector to add .graphdocs to root listings
-        let injector = Arc::new(GraphDocsDirInjector::new(default_handler));
+        let injector = Arc::new(GraphDocsDirInjector::new(default_handler.clone()));
         registry.register(injector);
-
-        registry
     } else {
-        tracing::debug!("No GraphDocs tables found, using default handler only");
-        HandlerRegistry::new(default_handler)
+        tracing::debug!("No GraphDocs tables found");
     }
+
+    // Register conformance handlers if enabled
+    if let Some(config) = conformance_config {
+        tracing::info!("TEA conformance enabled, registering handlers");
+
+        // Read handler (resolves .conformant/.source priority + Jinja2 expansion)
+        let read_handler = Arc::new(ConformanceReadHandler::new(pool.clone(), fs.clone()));
+        registry.register(read_handler);
+
+        // Write handler (writes to .source, marks stale, spawns background task)
+        let write_handler = Arc::new(ConformanceWriteHandler::new(
+            pool.clone(),
+            fs.clone(),
+            config,
+            runtime,
+        ));
+        registry.register(write_handler);
+    }
+
+    registry
 }
 
 /// Mount the agent filesystem using FUSE.
@@ -162,6 +194,20 @@ pub fn mount(args: MountArgs) -> Result<()> {
         gid: args.gid,
     };
 
+    // Build conformance config if enabled
+    let conformance_config = if args.tea_conformance {
+        Some(ConformanceConfig {
+            agents_dir: args
+                .tea_agents_dir
+                .unwrap_or_else(|| PathBuf::from("agents")),
+            overlay: args.tea_overlay,
+            model_path: args.tea_model_path,
+            timeout_secs: args.tea_timeout,
+        })
+    } else {
+        None
+    };
+
     let mount = move || {
         let rt = crate::get_runtime();
 
@@ -181,8 +227,9 @@ pub fn mount(args: MountArgs) -> Result<()> {
         // Create filesystem reference
         let fs: Arc<dyn FileSystem> = Arc::new(duckfs);
 
-        // Create handler registry with GraphDocs support if tables exist
-        let handler_registry = create_handler_registry(fs.clone(), &pool);
+        // Create handler registry with GraphDocs and conformance support
+        let handler_registry =
+            create_handler_registry(fs.clone(), &pool, conformance_config.clone(), rt.handle().clone());
 
         crate::fuse::mount(fs, fuse_opts, rt, Some(handler_registry))
     };

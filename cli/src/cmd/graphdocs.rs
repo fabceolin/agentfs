@@ -353,6 +353,10 @@ pub struct ConformArgs {
     #[clap(long)]
     pub agents_dir: Option<PathBuf>,
 
+    /// Overlay YAML file(s) to merge with agent configs (e.g., agents/overlay/claude-conformance.yaml)
+    #[clap(long, short = 'f')]
+    pub overlay: Option<PathBuf>,
+
     /// Preview changes without writing
     #[clap(long)]
     pub dry_run: bool,
@@ -1300,6 +1304,7 @@ pub async fn handle_conform(args: ConformArgs) -> Result<()> {
         dir: args.dir,
         model_path: args.model_path,
         agents_dir: args.agents_dir,
+        overlay: args.overlay,
         dry_run: args.dry_run,
     };
 

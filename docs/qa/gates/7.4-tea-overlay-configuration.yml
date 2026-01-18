@@ -1,0 +1,56 @@
+# Quality Gate: STORY-7.4 - TEA Overlay Configuration Support
+schema: 1
+story: "7.4"
+story_title: "TEA Overlay Configuration Support"
+gate: PASS
+status_reason: "CLI arguments --tea-conformance, --tea-agents-dir, --tea-overlay, --tea-model-path, --tea-timeout implemented and wired to ConformanceConfig. Handlers only registered when --tea-conformance enabled. Some tasks deferred (overlay validation, manual test guide)."
+reviewer: "Quinn (Test Architect)"
+updated: "2026-01-18T12:00:00Z"
+
+waiver: { active: false }
+
+top_issues:
+  - id: "CONFIG-001"
+    severity: low
+    finding: "Overlay path validation deferred - invalid YAML discovered at runtime"
+    suggested_action: "Document that overlay validation happens at conformance time, not mount time"
+
+risk_summary:
+  totals: { critical: 0, high: 1, medium: 4, low: 4 }
+  highest: 6
+  recommendations:
+    must_fix: []
+    monitor:
+      - "CONFIG-001: Relative path resolution may confuse users"
+
+quality_score: 85
+expires: "2026-02-01T00:00:00Z"
+
+evidence:
+  tests_reviewed: 25
+  risks_identified: 9
+  trace:
+    ac_covered: [1, 2, 3, 4, 5, 6]
+    ac_gaps: [7]  # Manual test guide deferred
+
+nfr_validation:
+  security:
+    status: PASS
+    notes: "Local CLI tool; user controls paths"
+  performance:
+    status: PASS
+    notes: "Configuration parsing only at mount time"
+  reliability:
+    status: PASS
+    notes: "Clear defaults; explicit opt-in for conformance"
+  maintainability:
+    status: PASS
+    notes: "Clean CLI argument structure"
+
+recommendations:
+  immediate: []
+  future:
+    - action: "Canonicalize overlay and agents_dir paths at mount time"
+      refs: ["cli/src/cmd/mount.rs:200-206"]
+    - action: "Update manual test guide for conformance testing"
+      refs: ["cli/docs/manual-test-graphdocs-fuse.md"]

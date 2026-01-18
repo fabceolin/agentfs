@@ -1,0 +1,8 @@
+# Overlay for document-transformer-agent to use Gemma3n:e4b via local GGUF
+# Usage: TEA_IMAGE=ghcr.io/fabceolin/tea:gemma3n-e4b tea-docker run agents/document-transformer-agent.yaml -f agents/overlay/gemma3n-transformer.yaml --input '...'
+# Note: Uses TEA_IMAGE which has gemma3n:e4b model built-in
+
+settings:
+  llm:
+    backend: local
+    n_ctx: 4096

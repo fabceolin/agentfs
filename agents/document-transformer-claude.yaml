@@ -1,0 +1,99 @@
+# agents/document-transformer-claude.yaml
+# Document transformer using Claude shell provider
+# RUN: tea-python run agents/document-transformer-claude.yaml --input '...'
+
+name: document-transformer-claude
+description: Transforms documents to match template structure using Claude shell provider
+
+state_schema:
+  document: object
+  template: object
+  conformance: object
+  output_content: str
+  needs_transform: bool
+
+settings:
+  llm:
+    backend: shell
+    shell_provider: claude
+
+config:
+  raise_exceptions: true
+
+nodes:
+  - name: analyze_gaps
+    language: lua
+    run: |
+      local conformance = state.conformance or {}
+      local missing = conformance.missing_sections or {}
+      local type_issues = conformance.type_mismatches or {}
+      local needs_transform = #missing > 0 or #type_issues > 0
+      return {
+        gaps = {
+          missing_sections = missing,
+          type_mismatches = type_issues
+        },
+        needs_transform = needs_transform
+      }
+    goto:
+      - if: "state.needs_transform"
+        to: generate_transform_prompt
+      - to: passthrough
+
+  - name: generate_transform_prompt
+    language: lua
+    run: |
+      local doc = state.document or {}
+      local template = state.template or {}
+      local gaps = state.gaps or {}
+      local template_sections = {}
+      for _, s in ipairs(template.sections or {}) do
+        if s.section_type == "heading" then
+          table.insert(template_sections, s.content)
+        end
+      end
+      local doc_content = {}
+      for _, s in ipairs(doc.sections or {}) do
+        table.insert(doc_content, s.content)
+      end
+      local title = doc.title or ""
+      local missing_str = table.concat(gaps.missing_sections or {}, ", ")
+      local tmpl_str = table.concat(template_sections, "\n")
+      local doc_str = table.concat(doc_content, "\n\n")
+      local prompt = "Transform this document to match the template structure.\n\n"
+      prompt = prompt .. "Current Document Title: " .. title .. "\n\n"
+      prompt = prompt .. "Missing Sections: " .. missing_str .. "\n\n"
+      prompt = prompt .. "Template Sections:\n" .. tmpl_str .. "\n\n"
+      prompt = prompt .. "Current Document Content:\n" .. doc_str .. "\n\n"
+      prompt = prompt .. "Output the transformed document in markdown format.\n"
+      prompt = prompt .. "Preserve existing content, add placeholders for missing sections."
+      return { transform_prompt = prompt }
+
+  - name: transform_with_llm
+    uses: llm.chat
+    with:
+      provider: shell
+      shell_provider: claude
+      messages:
+        - role: user
+          content: "{{ state.transform_prompt }}"
+      max_tokens: 2048
+      temperature: 0.2
+    output: transform_result
+
+  - name: extract_transformed
+    language: lua
+    run: |
+      local resp = state.transform_result or {}
+      local content = resp.content or ""
+      return { output_content = content }
+
+  - name: passthrough
+    language: lua
+    run: |
+      local doc = state.document or {}
+      local content_parts = {}
+      for _, s in ipairs(doc.sections or {}) do
+        table.insert(content_parts, s.content or "")
+      end
+      return { output_content = table.concat(content_parts, "\n\n") }

@@ -33,6 +33,7 @@ pub struct AgentTransformer {
     tea_binary: String,
     agents_dir: PathBuf,
     model_path: Option<PathBuf>,
+    overlay: Option<PathBuf>,
 }
 
 impl AgentTransformer {
@@ -42,12 +43,19 @@ impl AgentTransformer {
             tea_binary: std::env::var("TEA_BINARY").unwrap_or_else(|_| "tea".to_string()),
             agents_dir,
             model_path: None,
+            overlay: None,
         }
     }
 
     /// Set custom model path
     pub fn with_model_path(mut self, path: PathBuf) -> Self {
         self.model_path = Some(path);
+        self
+    }
+
+    /// Set overlay YAML file to merge with agent configs
+    pub fn with_overlay(mut self, path: PathBuf) -> Self {
+        self.overlay = Some(path);
         self
     }
 
@@ -73,9 +81,14 @@ impl AgentTransformer {
         }
 
         let mut cmd = Command::new(&self.tea_binary);
-        cmd.arg("run")
-            .arg(&agent_path)
-            .arg("--input")
+        cmd.arg("run").arg(&agent_path);
+
+        // Add overlay file if specified (merge with agent config)
+        if let Some(ref overlay_path) = self.overlay {
+            cmd.arg("-f").arg(overlay_path);
+        }
+
+        cmd.arg("--input")
             .arg(input.to_string())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -251,6 +264,7 @@ pub struct ConformArgs {
     pub dir: PathBuf,
     pub model_path: Option<PathBuf>,
     pub agents_dir: Option<PathBuf>,
+    pub overlay: Option<PathBuf>,
     pub dry_run: bool,
 }
 
@@ -276,6 +290,9 @@ pub async fn batch_transform(args: &ConformArgs) -> Result<Vec<TransformResult>>
     let mut transformer = AgentTransformer::new(agents_dir);
     if let Some(ref model_path) = args.model_path {
         transformer = transformer.with_model_path(model_path.clone());
+    }
+    if let Some(ref overlay) = args.overlay {
+        transformer = transformer.with_overlay(overlay.clone());
     }
 
     // Check TEA availability
@@ -426,6 +443,7 @@ mod tests {
             dir: dir.path().to_path_buf(),
             model_path: None,
             agents_dir: Some(PathBuf::from("agents")),
+            overlay: None,
             dry_run: true,
         };
 
@@ -452,15 +470,27 @@ mod tests {
     }
 
     #[test]
+    fn test_agent_transformer_with_overlay() {
+        let transformer = AgentTransformer::new(PathBuf::from("agents"))
+            .with_overlay(PathBuf::from("/path/to/overlay.yaml"));
+        assert_eq!(
+            transformer.overlay,
+            Some(PathBuf::from("/path/to/overlay.yaml"))
+        );
+    }
+
+    #[test]
     fn test_conform_args() {
         let args = ConformArgs {
             dir: PathBuf::from("/test/dir"),
             model_path: Some(PathBuf::from("/model.gguf")),
             agents_dir: Some(PathBuf::from("/agents")),
+            overlay: Some(PathBuf::from("/overlay.yaml")),
             dry_run: true,
         };
         assert_eq!(args.dir, PathBuf::from("/test/dir"));
         assert!(args.dry_run);
+        assert!(args.overlay.is_some());
     }
 
     #[test]

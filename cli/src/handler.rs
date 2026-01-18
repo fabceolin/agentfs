@@ -62,12 +62,16 @@
 
 use agentfs_sdk::error::{Error, Result};
 use agentfs_sdk::filesystem::duckagentfs::DuckConnectionPool;
+use agentfs_sdk::graphdocs::conformance::TemplateManager;
 use agentfs_sdk::graphdocs::GraphDocsEngine;
 use agentfs_sdk::{DirEntry, FileSystem, Stats};
 use async_trait::async_trait;
 use duckdb::params;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::runtime::Handle;
 
 // ============================================================================
 // HANDLER RESULT TYPE
@@ -1070,6 +1074,889 @@ impl FileHandler for GraphDocsDirInjector {
 }
 
 // ============================================================================
+// CONFORMANCE CONFIGURATION
+// ============================================================================
+
+/// Configuration for conformance handlers.
+///
+/// Specifies how the conformance system should operate, including:
+/// - Where to find TEA agent definitions
+/// - Optional overlay file for LLM backend configuration
+/// - Timeout settings for background tasks
+#[derive(Debug, Clone)]
+pub struct ConformanceConfig {
+    /// Directory containing TEA agent definitions.
+    pub agents_dir: PathBuf,
+    /// Optional overlay file for LLM configuration (Claude, GGUF, etc.)
+    pub overlay: Option<PathBuf>,
+    /// Optional model path for local GGUF models.
+    pub model_path: Option<PathBuf>,
+    /// Timeout in seconds for conformance operations (default: 30).
+    pub timeout_secs: u64,
+}
+
+impl Default for ConformanceConfig {
+    fn default() -> Self {
+        Self {
+            agents_dir: PathBuf::from("agents"),
+            overlay: None,
+            model_path: None,
+            timeout_secs: 30,
+        }
+    }
+}
+
+// ============================================================================
+// CONFORMANCE WRITE HANDLER (STORY-7.1)
+// ============================================================================
+
+/// Handler that intercepts writes to template-controlled directories.
+///
+/// When a user writes to a `.md` file in a directory with a template:
+/// 1. Content is saved to `.source` file immediately (non-blocking)
+/// 2. Any existing `.conformant` file is marked as stale
+/// 3. A background task is spawned to run conformance transformation
+/// 4. The write returns success immediately
+///
+/// This provides a responsive editing experience while conformance runs
+/// asynchronously in the background.
+pub struct ConformanceWriteHandler {
+    pool: DuckConnectionPool,
+    fs: Arc<dyn FileSystem>,
+    config: ConformanceConfig,
+    template_cache: Mutex<HashMap<PathBuf, Option<PathBuf>>>,
+    runtime: Handle,
+}
+
+impl ConformanceWriteHandler {
+    /// Create a new conformance write handler.
+    pub fn new(
+        pool: DuckConnectionPool,
+        fs: Arc<dyn FileSystem>,
+        config: ConformanceConfig,
+        runtime: Handle,
+    ) -> Self {
+        Self {
+            pool,
+            fs,
+            config,
+            template_cache: Mutex::new(HashMap::new()),
+            runtime,
+        }
+    }
+
+    /// Check if a path is a conformance-related file (should be skipped).
+    pub fn is_conformance_file(path: &str) -> bool {
+        let filename = Path::new(path)
+            .file_name()
+            .and_then(|f| f.to_str())
+            .unwrap_or(path);
+
+        filename.ends_with(".source")
+            || filename.ends_with(".conformant")
+            || filename.contains(".conformant.failed")
+            || filename.contains(".conformant.stale.")
+    }
+
+    /// Get the .source path for a logical path.
+    pub fn get_source_path(path: &str) -> String {
+        format!("{}.source", path)
+    }
+
+    /// Get the .conformant path for a logical path.
+    pub fn get_conformant_path(path: &str) -> String {
+        format!("{}.conformant", path)
+    }
+
+    /// Get parent directory of a path.
+    fn parent_dir(path: &str) -> Option<PathBuf> {
+        Path::new(path).parent().map(|p| p.to_path_buf())
+    }
+
+    /// Check if a directory has a template file (cached).
+    fn has_template(&self, dir: &Path) -> Option<PathBuf> {
+        let mut cache = self.template_cache.lock().unwrap();
+
+        if let Some(cached) = cache.get(dir) {
+            return cached.clone();
+        }
+
+        let result = TemplateManager::detect_template(dir);
+        cache.insert(dir.to_path_buf(), result.clone());
+        result
+    }
+
+    /// Mark an existing .conformant file as stale.
+    async fn mark_conformant_stale(&self, logical_path: &str) {
+        let conformant_path = Self::get_conformant_path(logical_path);
+
+        // Check if .conformant exists
+        if self.fs.stat(&conformant_path).await.ok().flatten().is_some() {
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let stale_path = format!("{}.stale.{}", conformant_path, timestamp);
+
+            // Rename to stale
+            if let Err(e) = self.fs.rename(&conformant_path, &stale_path).await {
+                tracing::warn!("Failed to mark conformant as stale: {}", e);
+            } else {
+                tracing::debug!("Marked {} as stale: {}", conformant_path, stale_path);
+            }
+        }
+    }
+}
+
+#[async_trait]
+impl FileHandler for ConformanceWriteHandler {
+    fn name(&self) -> &str {
+        "conformance-write"
+    }
+
+    fn priority(&self) -> u32 {
+        25 // After GraphDocsDirInjector (5), before GraphDocsHandler (50)
+    }
+
+    fn can_handle(&self, path: &str, _stats: Option<&Stats>) -> bool {
+        // Skip conformance-related files
+        if Self::is_conformance_file(path) {
+            return false;
+        }
+        // Only handle markdown files
+        if !path.ends_with(".md") || path.ends_with(".gd.md") {
+            return false;
+        }
+        // Check if parent has template
+        if let Some(parent) = Self::parent_dir(path) {
+            self.has_template(&parent).is_some()
+        } else {
+            false
+        }
+    }
+
+    async fn write(&self, path: &str, offset: u64, data: &[u8]) -> HandlerResult<usize> {
+        let source_path = Self::get_source_path(path);
+
+        // Write to .source file
+        // First try to open existing file, otherwise create it
+        let write_result = match self.fs.open(&source_path).await {
+            Ok(file) => file.pwrite(offset, data).await,
+            Err(_) => {
+                // Create the file first
+                match self.fs.create_file(&source_path, 0o644).await {
+                    Ok((_, file)) => file.pwrite(offset, data).await,
+                    Err(e) => return Err(e),
+                }
+            }
+        };
+
+        write_result?;
+
+        // Mark existing .conformant as stale
+        self.mark_conformant_stale(path).await;
+
+        // Spawn background conformance task
+        let pool = self.pool.clone();
+        let fs = self.fs.clone();
+        let config = self.config.clone();
+        let logical_path = path.to_string();
+        let template_path = self.has_template(&Self::parent_dir(path).unwrap()).unwrap();
+
+        self.runtime.spawn(async move {
+            if let Err(e) = run_background_conformance(
+                pool,
+                fs,
+                config,
+                logical_path.clone(),
+                template_path,
+            )
+            .await
+            {
+                tracing::error!("Background conformance failed for {}: {}", logical_path, e);
+            }
+        });
+
+        Ok(Some(data.len()))
+    }
+
+    async fn truncate(&self, path: &str, size: u64) -> HandlerResult<()> {
+        let source_path = Self::get_source_path(path);
+
+        // Truncate .source
+        match self.fs.open(&source_path).await {
+            Ok(file) => {
+                file.truncate(size).await?;
+            }
+            Err(_) => {
+                // Create file if it doesn't exist
+                let (_, file) = self.fs.create_file(&source_path, 0o644).await?;
+                file.truncate(size).await?;
+            }
+        }
+
+        // Mark existing .conformant as stale
+        self.mark_conformant_stale(path).await;
+
+        Ok(Some(()))
+    }
+}
+
+// ============================================================================
+// CONFORMANCE READ HANDLER (STORY-7.3)
+// ============================================================================
+
+/// Handler that resolves reads to the best available content version.
+///
+/// Resolution priority:
+/// 1. `.conformant` file (transformed content)
+/// 2. `.source` file (raw user content)
+/// 3. Physical file (legacy/initial content)
+///
+/// Also applies Jinja2-style variable expansion (`{{name}}`) using
+/// values from the `gd_variables` table.
+pub struct ConformanceReadHandler {
+    pool: DuckConnectionPool,
+    fs: Arc<dyn FileSystem>,
+    template_cache: Mutex<HashMap<PathBuf, Option<PathBuf>>>,
+    variable_cache: Mutex<HashMap<String, HashMap<String, String>>>,
+}
+
+impl ConformanceReadHandler {
+    /// Create a new conformance read handler.
+    pub fn new(pool: DuckConnectionPool, fs: Arc<dyn FileSystem>) -> Self {
+        Self {
+            pool,
+            fs,
+            template_cache: Mutex::new(HashMap::new()),
+            variable_cache: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Check if a directory has a template file (cached).
+    fn has_template(&self, dir: &Path) -> Option<PathBuf> {
+        let mut cache = self.template_cache.lock().unwrap();
+
+        if let Some(cached) = cache.get(dir) {
+            return cached.clone();
+        }
+
+        let result = TemplateManager::detect_template(dir);
+        cache.insert(dir.to_path_buf(), result.clone());
+        result
+    }
+
+    /// Get parent directory of a path.
+    fn parent_dir(path: &str) -> Option<PathBuf> {
+        Path::new(path).parent().map(|p| p.to_path_buf())
+    }
+
+    /// Resolve content from the best available source.
+    async fn resolve_content(&self, logical_path: &str) -> Result<String> {
+        let conformant_path = format!("{}.conformant", logical_path);
+        let source_path = format!("{}.source", logical_path);
+
+        // Priority: .conformant > .source > physical
+        if let Ok(Some(content)) = self.fs.read_file(&conformant_path).await {
+            tracing::debug!("Read resolved to .conformant for {}", logical_path);
+            return String::from_utf8(content)
+                .map_err(|e| Error::Custom(format!("Invalid UTF-8: {}", e)));
+        }
+
+        if let Ok(Some(content)) = self.fs.read_file(&source_path).await {
+            tracing::debug!("Read resolved to .source for {}", logical_path);
+            return String::from_utf8(content)
+                .map_err(|e| Error::Custom(format!("Invalid UTF-8: {}", e)));
+        }
+
+        if let Ok(Some(content)) = self.fs.read_file(logical_path).await {
+            tracing::debug!("Read resolved to physical file for {}", logical_path);
+            return String::from_utf8(content)
+                .map_err(|e| Error::Custom(format!("Invalid UTF-8: {}", e)));
+        }
+
+        Err(Error::Custom(format!("File not found: {}", logical_path)))
+    }
+
+    /// Resolve which path exists for getattr.
+    async fn resolve_path(&self, logical_path: &str) -> Result<String> {
+        let conformant_path = format!("{}.conformant", logical_path);
+        let source_path = format!("{}.source", logical_path);
+
+        if self.fs.stat(&conformant_path).await?.is_some() {
+            return Ok(conformant_path);
+        }
+        if self.fs.stat(&source_path).await?.is_some() {
+            return Ok(source_path);
+        }
+        if self.fs.stat(logical_path).await?.is_some() {
+            return Ok(logical_path.to_string());
+        }
+
+        Err(Error::Custom(format!("File not found: {}", logical_path)))
+    }
+
+    /// Convert a path to a document ID.
+    fn path_to_doc_id(path: &str) -> String {
+        Path::new(path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown")
+            .to_lowercase()
+            .replace(' ', "-")
+    }
+
+    /// Apply Jinja2-style variable expansion.
+    async fn expand_jinja2(&self, logical_path: &str, content: &str) -> Result<String> {
+        let doc_id = Self::path_to_doc_id(logical_path);
+
+        // Check cache first
+        {
+            let cache = self.variable_cache.lock().unwrap();
+            if let Some(vars) = cache.get(&doc_id) {
+                return Ok(Self::apply_variables(content, vars));
+            }
+        }
+
+        // Query database for variables
+        let pool = self.pool.clone();
+        let doc_id_clone = doc_id.clone();
+        let vars = tokio::task::spawn_blocking(move || {
+            let conn = pool.get_connection()?;
+            let mut stmt = conn
+                .prepare("SELECT name, value FROM gd_variables WHERE document_id = ?")
+                .map_err(|e| Error::Custom(format!("Failed to prepare query: {}", e)))?;
+
+            let rows = stmt
+                .query_map(params![doc_id_clone], |row| {
+                    let name: String = row.get(0)?;
+                    let value: String = row.get(1)?;
+                    Ok((name, value))
+                })
+                .map_err(|e| Error::Custom(format!("Failed to query variables: {}", e)))?;
+
+            let mut vars = HashMap::new();
+            for (name, value) in rows.flatten() {
+                // Parse JSON value, extract string
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&value) {
+                    let v = match json {
+                        serde_json::Value::String(s) => s,
+                        serde_json::Value::Bool(b) => b.to_string(),
+                        serde_json::Value::Number(n) => n.to_string(),
+                        other => other.to_string(),
+                    };
+                    vars.insert(name, v);
+                } else {
+                    vars.insert(name, value);
+                }
+            }
+
+            Ok::<_, Error>(vars)
+        })
+        .await
+        .map_err(|e| Error::Custom(format!("spawn_blocking error: {}", e)))??;
+
+        // Cache variables
+        {
+            let mut cache = self.variable_cache.lock().unwrap();
+            cache.insert(doc_id, vars.clone());
+        }
+
+        Ok(Self::apply_variables(content, &vars))
+    }
+
+    /// Replace {{name}} placeholders with values.
+    fn apply_variables(content: &str, vars: &HashMap<String, String>) -> String {
+        let mut result = content.to_string();
+
+        for (name, value) in vars {
+            let placeholder = format!("{{{{{}}}}}", name);
+            result = result.replace(&placeholder, value);
+        }
+
+        result
+    }
+}
+
+#[async_trait]
+impl FileHandler for ConformanceReadHandler {
+    fn name(&self) -> &str {
+        "conformance-read"
+    }
+
+    fn priority(&self) -> u32 {
+        20 // Before write handler (25)
+    }
+
+    fn can_handle(&self, path: &str, _stats: Option<&Stats>) -> bool {
+        // Skip conformance-related files (let them through to default)
+        if ConformanceWriteHandler::is_conformance_file(path) {
+            return false;
+        }
+        // Only handle markdown in template directories
+        if !path.ends_with(".md") || path.ends_with(".gd.md") {
+            return false;
+        }
+        if let Some(parent) = Self::parent_dir(path) {
+            self.has_template(&parent).is_some()
+        } else {
+            false
+        }
+    }
+
+    async fn read(&self, path: &str, offset: u64, size: u64) -> HandlerResult<Vec<u8>> {
+        // Resolve to best available content
+        let content = match self.resolve_content(path).await {
+            Ok(c) => c,
+            Err(Error::Custom(msg)) if msg.starts_with("File not found") => return Ok(None),
+            Err(e) => return Err(e),
+        };
+
+        // Apply Jinja2 expansion
+        let expanded = self.expand_jinja2(path, &content).await?;
+
+        // Return requested slice
+        let bytes = expanded.as_bytes();
+        let start = offset as usize;
+        let end = (offset + size) as usize;
+
+        if start >= bytes.len() {
+            return Ok(Some(vec![]));
+        }
+
+        Ok(Some(bytes[start..end.min(bytes.len())].to_vec()))
+    }
+
+    async fn getattr(&self, path: &str) -> HandlerResult<Stats> {
+        // Get resolved content for accurate size
+        let content = match self.resolve_content(path).await {
+            Ok(c) => c,
+            Err(Error::Custom(msg)) if msg.starts_with("File not found") => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        let expanded = self.expand_jinja2(path, &content).await?;
+
+        // Get stats from underlying file
+        let resolved_path = self.resolve_path(path).await?;
+        if let Some(mut stats) = self.fs.stat(&resolved_path).await? {
+            // Adjust size for Jinja2 expansion
+            stats.size = expanded.len() as i64;
+            return Ok(Some(stats));
+        }
+
+        Ok(None)
+    }
+
+    async fn readdir(&self, path: &str) -> HandlerResult<Vec<String>> {
+        // Get actual entries
+        let entries = match self.fs.readdir(path).await? {
+            Some(e) => e,
+            None => return Ok(None),
+        };
+
+        // Filter out conformance files
+        let filtered: Vec<String> = entries
+            .into_iter()
+            .filter(|e| !ConformanceWriteHandler::is_conformance_file(e))
+            .collect();
+
+        Ok(Some(filtered))
+    }
+
+    async fn readdir_plus(&self, path: &str) -> HandlerResult<Vec<DirEntry>> {
+        // Get actual entries
+        let entries = match self.fs.readdir_plus(path).await? {
+            Some(e) => e,
+            None => return Ok(None),
+        };
+
+        // Filter out conformance files
+        let filtered: Vec<DirEntry> = entries
+            .into_iter()
+            .filter(|e| !ConformanceWriteHandler::is_conformance_file(&e.name))
+            .collect();
+
+        Ok(Some(filtered))
+    }
+}
+
+// ============================================================================
+// BACKGROUND CONFORMANCE PROCESS (STORY-7.2)
+// ============================================================================
+
+/// Run background conformance transformation.
+///
+/// This function is spawned by ConformanceWriteHandler after a write completes.
+/// It:
+/// 1. Reads the .source content
+/// 2. Checks conformance against the template
+/// 3. Transforms if needed via TEA (or rule-based fallback)
+/// 4. Writes .conformant (or .conformant.failed)
+/// 5. Syncs to database (gd_documents, gd_sections, gd_variables)
+/// 6. Cleans up stale files
+pub async fn run_background_conformance(
+    pool: DuckConnectionPool,
+    fs: Arc<dyn FileSystem>,
+    config: ConformanceConfig,
+    logical_path: String,
+    template_path: PathBuf,
+) -> Result<()> {
+    let source_path = ConformanceWriteHandler::get_source_path(&logical_path);
+    let conformant_path = ConformanceWriteHandler::get_conformant_path(&logical_path);
+    let failed_path = format!("{}.failed", conformant_path);
+
+    tracing::info!("Starting background conformance for {}", logical_path);
+
+    // Read source content
+    let content = match fs.read_file(&source_path).await? {
+        Some(c) => c,
+        None => {
+            tracing::warn!("Source file not found: {}", source_path);
+            return Ok(());
+        }
+    };
+
+    let content_str = String::from_utf8(content)
+        .map_err(|e| Error::Custom(format!("Invalid UTF-8 in source: {}", e)))?;
+
+    // Record source mtime for race detection
+    let source_mtime = fs.stat(&source_path).await?.map(|s| s.mtime);
+
+    // Run conformance pipeline
+    let result = run_conformance_pipeline(&content_str, &template_path, &config).await;
+
+    // Check if source was modified during processing
+    let current_mtime = fs.stat(&source_path).await?.map(|s| s.mtime);
+    if current_mtime != source_mtime {
+        tracing::info!(
+            "Source modified during conformance for {}, aborting",
+            logical_path
+        );
+        return Ok(()); // Don't write stale conformant
+    }
+
+    match result {
+        Ok(transformed) => {
+            // Write .conformant file
+            fs.write_file(&conformant_path, transformed.as_bytes())
+                .await?;
+
+            // Sync to database
+            if let Err(e) = sync_to_database(&pool, &logical_path, &transformed).await {
+                tracing::warn!("Database sync failed for {}: {}", logical_path, e);
+            }
+
+            // Delete stale files
+            delete_stale_files(&fs, &conformant_path).await;
+
+            // Delete .failed file if it exists
+            let _ = fs.remove(&failed_path).await;
+
+            tracing::info!("Conformance completed for {}", logical_path);
+        }
+        Err(e) => {
+            // Write .conformant.failed
+            let error_content = serde_json::json!({
+                "error_type": "conformance_failed",
+                "message": e.to_string(),
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+                "template_path": template_path.display().to_string(),
+            });
+            fs.write_file(&failed_path, error_content.to_string().as_bytes())
+                .await?;
+
+            tracing::error!("Conformance failed for {}: {}", logical_path, e);
+        }
+    }
+
+    Ok(())
+}
+
+/// Run the conformance pipeline.
+async fn run_conformance_pipeline(
+    content: &str,
+    template_path: &Path,
+    config: &ConformanceConfig,
+) -> Result<String> {
+    use agentfs_sdk::graphdocs::agent_transformer::{AgentTransformer, ConformanceResult};
+    use agentfs_sdk::graphdocs::parser::MarkdownParser;
+    use agentfs_sdk::graphdocs::template_schema::BmadTemplate;
+
+    // Parse document
+    let parser = MarkdownParser::new();
+    let doc = parser
+        .parse(content)
+        .map_err(|e| Error::Custom(format!("Failed to parse document: {}", e)))?;
+
+    // Load template
+    let is_yaml = TemplateManager::is_yaml_template(template_path);
+    let (template_doc, bmad_template) = if is_yaml {
+        let tmpl_content = std::fs::read_to_string(template_path)
+            .map_err(|e| Error::Custom(format!("Failed to read template: {}", e)))?;
+        let bmad = BmadTemplate::from_yaml(&tmpl_content)
+            .map_err(|e| Error::Custom(format!("Failed to parse YAML template: {}", e)))?;
+        (bmad.to_parsed_document(), Some(bmad))
+    } else {
+        let tmpl_content = std::fs::read_to_string(template_path)
+            .map_err(|e| Error::Custom(format!("Failed to read template: {}", e)))?;
+        let template = parser
+            .parse(&tmpl_content)
+            .map_err(|e| Error::Custom(format!("Failed to parse template: {}", e)))?;
+        (template, None)
+    };
+
+    // Check conformance
+    let mut manager = TemplateManager::new();
+    let (missing_sections, type_mismatches, is_conformant) = if let Some(ref bmad) = bmad_template {
+        manager
+            .load_bmad_template_sync(template_path)
+            .map_err(|e| Error::Custom(format!("Failed to load BMAD template: {}", e)))?;
+        let result = manager.check_bmad_conformance(&doc, bmad, template_path);
+        (
+            result
+                .missing_sections
+                .iter()
+                .map(|s| s.section_title.clone())
+                .collect(),
+            result
+                .type_violations
+                .iter()
+                .map(|v| v.section_title.clone())
+                .collect(),
+            result.is_conformant,
+        )
+    } else {
+        manager
+            .load_markdown_template_sync(template_path)
+            .map_err(|e| Error::Custom(format!("Failed to load markdown template: {}", e)))?;
+        let result = manager.check_markdown_conformance(&doc, &template_doc, template_path);
+        (result.missing_sections, vec![], result.is_conformant)
+    };
+
+    // If conformant, return original
+    if is_conformant {
+        return Ok(content.to_string());
+    }
+
+    // Transform via TEA or rule-based
+    let mut transformer = AgentTransformer::new(config.agents_dir.clone());
+    if let Some(ref overlay) = config.overlay {
+        transformer = transformer.with_overlay(overlay.clone());
+    }
+    if let Some(ref model_path) = config.model_path {
+        transformer = transformer.with_model_path(model_path.clone());
+    }
+
+    let conformance_result = ConformanceResult {
+        file_path: String::new(),
+        template_path: Some(template_path.display().to_string()),
+        is_conformant: false,
+        missing_sections,
+        extra_sections: vec![],
+        type_mismatches,
+        suggestions: vec![],
+    };
+
+    // Try TEA, fallback to rule-based
+    if transformer.check_tea_available().await.unwrap_or(false) {
+        match transformer
+            .transform_to_template(&doc, &template_doc, &conformance_result)
+            .await
+        {
+            Ok(content) => Ok(content),
+            Err(e) => {
+                tracing::warn!("TEA failed, using rule-based: {}", e);
+                transformer
+                    .transform_rule_based(&doc, &template_doc, &conformance_result)
+                    .map_err(|e| Error::Custom(format!("Rule-based transform failed: {}", e)))
+            }
+        }
+    } else {
+        transformer
+            .transform_rule_based(&doc, &template_doc, &conformance_result)
+            .map_err(|e| Error::Custom(format!("Rule-based transform failed: {}", e)))
+    }
+}
+
+/// Sync document to database (gd_documents, gd_sections, gd_variables).
+async fn sync_to_database(
+    pool: &DuckConnectionPool,
+    logical_path: &str,
+    content: &str,
+) -> Result<()> {
+    use agentfs_sdk::graphdocs::parser::{MarkdownParser, SectionType};
+
+    let pool = pool.clone();
+    let path = logical_path.to_string();
+    let content = content.to_string();
+
+    tokio::task::spawn_blocking(move || {
+        let conn = pool.get_connection()?;
+        let doc_id = path_to_doc_id(&path);
+
+        tracing::debug!("Syncing {} (id: {}) to database", path, doc_id);
+
+        // Parse document
+        let parser = MarkdownParser::new();
+        let doc = parser
+            .parse(&content)
+            .map_err(|e| Error::Custom(format!("Failed to parse document: {}", e)))?;
+
+        // Extract title
+        let title = doc
+            .title
+            .clone()
+            .unwrap_or_else(|| doc_id.to_uppercase().replace('-', " "));
+
+        // === UPSERT DOCUMENT ===
+        conn.execute(
+            r#"
+            INSERT INTO gd_documents (id, title, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT (id) DO UPDATE SET
+                title = EXCLUDED.title,
+                updated_at = CURRENT_TIMESTAMP
+            "#,
+            params![doc_id, title],
+        )
+        .map_err(|e| Error::Custom(format!("Failed to upsert document: {}", e)))?;
+
+        // Journal entry
+        let doc_data = serde_json::json!({ "id": doc_id, "title": title });
+        conn.execute(
+            r#"INSERT INTO gd_journal (event_type, table_name, record_id, new_data)
+               VALUES ('upsert', 'gd_documents', ?, ?)"#,
+            params![doc_id, doc_data.to_string()],
+        )
+        .map_err(|e| Error::Custom(format!("Failed to insert journal: {}", e)))?;
+
+        // === DELETE OLD SECTIONS ===
+        conn.execute("DELETE FROM gd_sections WHERE document_id = ?", params![doc_id])
+            .map_err(|e| Error::Custom(format!("Failed to delete sections: {}", e)))?;
+
+        // === INSERT SECTIONS ===
+        for (idx, section) in doc.sections.iter().enumerate() {
+            let section_id = format!("{}-s{}", doc_id, idx);
+            conn.execute(
+                r#"
+                INSERT INTO gd_sections (id, document_id, section_type, level, order_idx, content)
+                VALUES (?, ?, ?, ?, ?, ?)
+                "#,
+                params![
+                    section_id,
+                    doc_id,
+                    section.section_type.as_str(),
+                    section.level.map(|l| l as i32),
+                    section.order_idx,
+                    section.content
+                ],
+            )
+            .map_err(|e| Error::Custom(format!("Failed to insert section: {}", e)))?;
+        }
+
+        // === DELETE OLD VARIABLES ===
+        conn.execute(
+            "DELETE FROM gd_variables WHERE document_id = ?",
+            params![doc_id],
+        )
+        .map_err(|e| Error::Custom(format!("Failed to delete variables: {}", e)))?;
+
+        // === EXTRACT AND INSERT VARIABLES ===
+        // Variables from doc.variables are just names (no values), skip them
+        // Instead, extract from heading+content pairs
+        let mut current_heading: Option<&str> = None;
+        for section in &doc.sections {
+            if section.section_type == SectionType::Heading {
+                current_heading = Some(&section.content);
+            } else if let Some(heading) = current_heading {
+                let var_name = heading_to_var_name(heading);
+                if !var_name.is_empty() {
+                    insert_variable(&conn, &doc_id, &var_name, section.content.trim())?;
+                }
+                current_heading = None;
+            }
+        }
+
+        tracing::info!(
+            "Synced {} sections and variables for {}",
+            doc.sections.len(),
+            doc_id
+        );
+        Ok(())
+    })
+    .await
+    .map_err(|e| Error::Custom(format!("spawn_blocking error: {}", e)))?
+}
+
+/// Convert path to document ID.
+fn path_to_doc_id(path: &str) -> String {
+    Path::new(path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("unknown")
+        .to_lowercase()
+        .replace(' ', "-")
+}
+
+/// Convert heading to variable name.
+fn heading_to_var_name(heading: &str) -> String {
+    heading
+        .to_lowercase()
+        .replace([' ', '/'], "_")
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '_')
+        .collect()
+}
+
+/// Insert a variable into the database.
+fn insert_variable(
+    conn: &duckdb::Connection,
+    doc_id: &str,
+    name: &str,
+    value: &str,
+) -> Result<()> {
+    let var_id = format!("{}-v-{}", doc_id, name);
+    let json_value = serde_json::Value::String(value.to_string());
+
+    conn.execute(
+        r#"
+        INSERT INTO gd_variables (id, document_id, name, value, var_type)
+        VALUES (?, ?, ?, ?, 'string')
+        ON CONFLICT (id) DO UPDATE SET
+            value = EXCLUDED.value, var_type = EXCLUDED.var_type, updated_at = CURRENT_TIMESTAMP
+        "#,
+        params![var_id, doc_id, name, json_value.to_string()],
+    )
+    .map_err(|e| Error::Custom(format!("Failed to insert variable: {}", e)))?;
+
+    Ok(())
+}
+
+/// Delete stale conformant files.
+async fn delete_stale_files(fs: &Arc<dyn FileSystem>, conformant_path: &str) {
+    let parent = Path::new(conformant_path)
+        .parent()
+        .unwrap_or(Path::new("/"));
+    let filename = Path::new(conformant_path)
+        .file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or("");
+
+    if let Ok(Some(entries)) = fs.readdir(parent.to_str().unwrap_or("/")).await {
+        for entry in entries {
+            if entry.starts_with(&format!("{}.stale.", filename)) {
+                let stale_path = format!("{}/{}", parent.display(), entry);
+                if let Err(e) = fs.remove(&stale_path).await {
+                    tracing::warn!("Failed to delete stale file {}: {}", stale_path, e);
+                } else {
+                    tracing::debug!("Deleted stale file: {}", stale_path);
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
 // PATTERN-BASED HANDLER
 // ============================================================================
 
@@ -1730,5 +2617,119 @@ mod tests {
         let name = "readme.gd.md";
         assert!(parent_path != "/" || name != ".graphdocs");
         assert!(parent_path != GRAPHDOCS_DIR && parent_path != "/.graphdocs/");
+    }
+
+    // ========================================================================
+    // CONFORMANCE HANDLER TESTS (STORY-7.1, 7.2, 7.3)
+    // ========================================================================
+
+    #[test]
+    fn test_is_conformance_file() {
+        // .source files
+        assert!(ConformanceWriteHandler::is_conformance_file("/docs/story.md.source"));
+        assert!(ConformanceWriteHandler::is_conformance_file("file.source"));
+
+        // .conformant files
+        assert!(ConformanceWriteHandler::is_conformance_file("/docs/story.md.conformant"));
+        assert!(ConformanceWriteHandler::is_conformance_file("file.conformant"));
+
+        // .conformant.failed files
+        assert!(ConformanceWriteHandler::is_conformance_file(
+            "/docs/story.md.conformant.failed"
+        ));
+
+        // .conformant.stale.* files
+        assert!(ConformanceWriteHandler::is_conformance_file(
+            "/docs/story.md.conformant.stale.1234567890"
+        ));
+
+        // Regular files (not conformance files)
+        assert!(!ConformanceWriteHandler::is_conformance_file("/docs/story.md"));
+        assert!(!ConformanceWriteHandler::is_conformance_file("/docs/template.yaml"));
+        assert!(!ConformanceWriteHandler::is_conformance_file("README.md"));
+    }
+
+    #[test]
+    fn test_get_source_path() {
+        assert_eq!(
+            ConformanceWriteHandler::get_source_path("/docs/story.md"),
+            "/docs/story.md.source"
+        );
+        assert_eq!(
+            ConformanceWriteHandler::get_source_path("file.md"),
+            "file.md.source"
+        );
+    }
+
+    #[test]
+    fn test_get_conformant_path() {
+        assert_eq!(
+            ConformanceWriteHandler::get_conformant_path("/docs/story.md"),
+            "/docs/story.md.conformant"
+        );
+        assert_eq!(
+            ConformanceWriteHandler::get_conformant_path("file.md"),
+            "file.md.conformant"
+        );
+    }
+
+    #[test]
+    fn test_path_to_doc_id() {
+        assert_eq!(path_to_doc_id("/docs/stories/STORY-7.1.md"), "story-7.1");
+        assert_eq!(path_to_doc_id("/home/user/README.md"), "readme");
+        assert_eq!(path_to_doc_id("My Document.md"), "my-document");
+        assert_eq!(path_to_doc_id("/foo/bar.txt"), "bar");
+    }
+
+    #[test]
+    fn test_heading_to_var_name() {
+        assert_eq!(heading_to_var_name("Status"), "status");
+        assert_eq!(heading_to_var_name("Dev Notes"), "dev_notes");
+        // " / " becomes "___" (space, slash, space -> _, _, _)
+        assert_eq!(heading_to_var_name("API / Endpoints"), "api___endpoints");
+        assert_eq!(heading_to_var_name("Tasks (Todo)"), "tasks_todo");
+    }
+
+    #[test]
+    fn test_conformance_config_default() {
+        let config = ConformanceConfig::default();
+        assert_eq!(config.agents_dir, PathBuf::from("agents"));
+        assert!(config.overlay.is_none());
+        assert!(config.model_path.is_none());
+        assert_eq!(config.timeout_secs, 30);
+    }
+
+    #[test]
+    fn test_apply_variables() {
+        let mut vars = HashMap::new();
+        vars.insert("name".to_string(), "John".to_string());
+        vars.insert("status".to_string(), "Done".to_string());
+
+        let content = "Hello {{name}}, your status is {{status}}.";
+        let result = ConformanceReadHandler::apply_variables(content, &vars);
+
+        assert_eq!(result, "Hello John, your status is Done.");
+    }
+
+    #[test]
+    fn test_apply_variables_no_match() {
+        let vars = HashMap::new();
+
+        let content = "Hello {{name}}, welcome!";
+        let result = ConformanceReadHandler::apply_variables(content, &vars);
+
+        // Unmatched placeholders remain unchanged
+        assert_eq!(result, "Hello {{name}}, welcome!");
+    }
+
+    #[test]
+    fn test_apply_variables_multiple_same() {
+        let mut vars = HashMap::new();
+        vars.insert("x".to_string(), "42".to_string());
+
+        let content = "{{x}} + {{x}} = {{result}}";
+        let result = ConformanceReadHandler::apply_variables(content, &vars);
+
+        assert_eq!(result, "42 + 42 = {{result}}");
     }
 }

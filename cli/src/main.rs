@@ -102,6 +102,11 @@ fn main() {
             foreground,
             uid,
             gid,
+            tea_conformance,
+            tea_agents_dir,
+            tea_overlay,
+            tea_model_path,
+            tea_timeout,
         } => match (id_or_path, mountpoint) {
             (Some(id_or_path), Some(mountpoint)) => {
                 if let Err(e) = cmd::mount(cmd::MountArgs {
@@ -112,6 +117,11 @@ fn main() {
                     foreground,
                     uid,
                     gid,
+                    tea_conformance,
+                    tea_agents_dir,
+                    tea_overlay,
+                    tea_model_path,
+                    tea_timeout,
                 }) {
                     eprintln!("Error: {}", e);
                     std::process::exit(1);

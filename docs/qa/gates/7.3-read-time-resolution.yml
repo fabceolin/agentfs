@@ -1,0 +1,52 @@
+# Quality Gate: STORY-7.3 - Read-Time Resolution with Jinja2 Expansion
+schema: 1
+story: "7.3"
+story_title: "Read-Time Resolution with Jinja2 Expansion"
+gate: PASS
+status_reason: "All acceptance criteria met. ConformanceReadHandler implemented at priority 20 with content resolution (.conformant > .source > physical), Jinja2 variable expansion from gd_variables, readdir filtering of hidden files, and size adjustment in getattr."
+reviewer: "Quinn (Test Architect)"
+updated: "2026-01-18T12:00:00Z"
+
+waiver: { active: false }
+
+top_issues: []
+
+risk_summary:
+  totals: { critical: 0, high: 1, medium: 6, low: 4 }
+  highest: 6
+  recommendations:
+    must_fix: []
+    monitor:
+      - "DATA-001: Stale .conformant may be returned when .source is newer - consider mtime comparison"
+
+quality_score: 92
+expires: "2026-02-01T00:00:00Z"
+
+evidence:
+  tests_reviewed: 25
+  risks_identified: 11
+  trace:
+    ac_covered: [1, 2, 3, 4, 5, 6, 7, 8]
+    ac_gaps: []
+
+nfr_validation:
+  security:
+    status: PASS
+    notes: "Read-only operations; variable values from database only"
+  performance:
+    status: CONCERNS
+    notes: "getattr reads entire file for size calculation; variable cache per-request"
+  reliability:
+    status: PASS
+    notes: "Graceful fallback through resolution priority"
+  maintainability:
+    status: PASS
+    notes: "Clear apply_variables implementation; well-tested"
+
+recommendations:
+  immediate: []
+  future:
+    - action: "Consider mtime comparison in resolve_content to prefer fresher content"
+      refs: ["cli/src/handler.rs:1355-1379"]
+    - action: "Add TTL to variable cache for long-running mounts"
+      refs: ["cli/src/handler.rs:1459-1463"]

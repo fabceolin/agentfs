@@ -1,0 +1,20 @@
+# Overlay for document-transformer-agent to use Claude shell provider
+# Usage: tea-python run agents/document-transformer-agent.yaml -f agents/overlay/claude-transformer.yaml --input '...'
+
+settings:
+  llm:
+    backend: shell
+    shell_provider: claude
+
+nodes:
+  - name: transform_with_llm
+    uses: llm.chat
+    with:
+      provider: shell
+      shell_provider: claude
+      messages:
+        - role: user
+          content: "{{ state.transform_prompt }}"
+      max_tokens: 2048
+      temperature: 0.2
+    output: transform_result
