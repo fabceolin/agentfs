@@ -295,6 +295,24 @@ Implementar um backend de armazenamento para AgentFS usando DuckDB como banco de
 
 ---
 
+#### STORY-6.6: DuckDB CLI Namespace and Auto-Initialize
+**Como** usuario CLI
+**Quero** um namespace dedicado `agentfs duckdb` com comando `init` e auto-criacao em mount/graphdocs
+**Para** criar e gerenciar databases DuckDB facilmente, com namespace limpo para backends futuros
+
+**Status**: Approved
+
+**Criterios de Aceitacao**:
+- [ ] `agentfs duckdb init <agent-id>` cria `.agentfs/<id>.duckdb`
+- [ ] Flags opcionais: `--vss`, `--pgq`, `--force`
+- [ ] `agentfs mount` auto-cria database se nao existir
+- [ ] `agentfs graphdocs` auto-cria database se nao existir
+- [ ] Mensagens informativas e help text
+
+**Arquivo**: `cli/src/cmd/duckdb.rs` (novo)
+
+---
+
 ## Arquivos Criados
 
 | Arquivo | Descricao | Status |

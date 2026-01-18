@@ -34,35 +34,52 @@ pub struct MountArgs {
 }
 
 /// Resolve database path from ID or path string.
+/// Returns (path, auto_created) tuple.
 ///
 /// Supports:
 /// - `:memory:` for in-memory database
 /// - Existing file path (used directly)
-/// - Agent ID (looks for `.agentfs/{id}.duckdb`)
+/// - Agent ID (looks for `.agentfs/{id}.duckdb`, creates if not found)
 #[cfg(target_os = "linux")]
-fn resolve_db_path(id_or_path: &str) -> Result<String> {
+fn resolve_db_path(id_or_path: &str) -> Result<(String, bool)> {
     if id_or_path == ":memory:" {
-        return Ok(":memory:".to_string());
+        return Ok((":memory:".to_string(), false));
     }
 
     let path = std::path::Path::new(id_or_path);
     if path.exists() {
-        return Ok(id_or_path.to_string());
+        return Ok((id_or_path.to_string(), false));
+    }
+
+    // Validate agent ID: alphanumeric, hyphens, underscores only
+    let is_valid_id = !id_or_path.is_empty()
+        && id_or_path
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_');
+
+    if !is_valid_id {
+        anyhow::bail!(
+            "Invalid agent ID '{}': must contain only alphanumeric characters, hyphens, and underscores",
+            id_or_path
+        );
     }
 
     // Try as agent ID
     let agentfs_dir = agentfs_sdk::agentfs_dir();
     let db_path = agentfs_dir.join(format!("{}.duckdb", id_or_path));
+
     if db_path.exists() {
-        return Ok(db_path.to_string_lossy().to_string());
+        return Ok((db_path.to_string_lossy().to_string(), false));
     }
 
-    anyhow::bail!(
-        "DuckDB database not found: {} (tried {} and {:?})",
-        id_or_path,
-        id_or_path,
-        db_path
-    )
+    // Database doesn't exist - will be auto-created
+    // Ensure .agentfs directory exists
+    if !agentfs_dir.exists() {
+        std::fs::create_dir_all(agentfs_dir)
+            .with_context(|| format!("Failed to create directory: {agentfs_dir:?}"))?;
+    }
+
+    Ok((db_path.to_string_lossy().to_string(), true))
 }
 
 /// Check if gd_documents table exists (GraphDocs tables present).
@@ -116,8 +133,12 @@ fn create_handler_registry(
 /// Mount the agent filesystem using FUSE.
 #[cfg(target_os = "linux")]
 pub fn mount(args: MountArgs) -> Result<()> {
-    // Resolve database path (DuckDB only)
-    let db_path = resolve_db_path(&args.id_or_path)?;
+    // Resolve database path (DuckDB only), auto-creating if needed
+    let (db_path, auto_created) = resolve_db_path(&args.id_or_path)?;
+
+    if auto_created {
+        eprintln!("info: Creating new DuckDB database: {}", db_path);
+    }
 
     let fsname = format!(
         "agentfs:{}",

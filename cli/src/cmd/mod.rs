@@ -1,4 +1,5 @@
 pub mod completions;
+pub mod duckdb;
 pub mod fs;
 pub mod graphdocs;
 pub mod init;

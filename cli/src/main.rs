@@ -1,5 +1,5 @@
 use agentfs::{
-    cmd::{self, completions::handle_completions, graphdocs::GraphDocsCommand},
+    cmd::{self, completions::handle_completions, duckdb::DuckdbCommand, graphdocs::GraphDocsCommand},
     get_runtime,
     parser::{Args, Command, FsCommand, PruneCommand, ServeCommand, SyncCommand},
 };
@@ -314,9 +314,23 @@ fn main() {
                             GraphDocsCommand::Edit(args) => {
                                 cmd::graphdocs::handle_edit(&fs, args).await
                             }
+                            GraphDocsCommand::Check(args) => {
+                                cmd::graphdocs::handle_check(&fs, args).await
+                            }
                             GraphDocsCommand::Conform(_) => unreachable!(),
                         }
                     }
+                }
+            }) {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        }
+        Command::Duckdb { command } => {
+            let rt = get_runtime();
+            if let Err(e) = rt.block_on(async {
+                match command {
+                    DuckdbCommand::Init(args) => cmd::duckdb::handle_init(args).await,
                 }
             }) {
                 eprintln!("Error: {}", e);

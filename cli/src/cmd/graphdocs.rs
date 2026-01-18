@@ -358,6 +358,20 @@ pub struct ConformArgs {
     pub dry_run: bool,
 }
 
+#[derive(Args, Debug)]
+pub struct CheckArgs {
+    /// Directory to scan for documents
+    pub dir: PathBuf,
+
+    /// Template to check against (required)
+    #[clap(long, short)]
+    pub template: String,
+
+    /// Output format: table, json
+    #[clap(long, value_enum, default_value_t = OutputFormat::Table)]
+    pub format: OutputFormat,
+}
+
 /// Output format for edit command
 #[derive(ValueEnum, Clone, Debug, Default)]
 pub enum EditFormat {
@@ -1366,7 +1380,7 @@ pub async fn handle_edit(fs: &DuckAgentFS, args: EditArgs) -> Result<()> {
         EditFormat::Yaml => "yaml",
         EditFormat::Toml => "toml",
     };
-    let mut temp_file = NamedTempFile::with_suffix(&format!(".{}", extension))
+    let mut temp_file = NamedTempFile::with_suffix(format!(".{}", extension))
         .context("Failed to create temp file")?;
     temp_file
         .write_all(content.as_bytes())
@@ -1433,6 +1447,34 @@ pub async fn handle_edit(fs: &DuckAgentFS, args: EditArgs) -> Result<()> {
     apply_changes(fs, &args.doc_id, &doc, &modified_doc)?;
 
     println!("Changes applied successfully.");
+
+    Ok(())
+}
+
+/// Handle the graphdocs check command - check document conformance without LLM
+///
+/// Note: This command is a placeholder. Use `agentfs graphdocs conform` for full
+/// conformance checking with LLM support.
+pub async fn handle_check(_fs: &DuckAgentFS, args: CheckArgs) -> Result<()> {
+    // TODO: Implement template-based conformance checking without LLM
+    // For now, just validate that the directory exists and contains markdown files
+    if !args.dir.exists() {
+        anyhow::bail!("Directory not found: {:?}", args.dir);
+    }
+
+    let mut count = 0;
+    for entry in std::fs::read_dir(&args.dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().is_some_and(|e| e == "md") {
+            count += 1;
+            println!("Found: {:?}", path.file_name().unwrap_or_default());
+        }
+    }
+
+    println!("\nFound {} markdown files in {:?}", count, args.dir);
+    println!("Note: Full conformance checking against template '{}' is not yet implemented.", args.template);
+    println!("Use `agentfs graphdocs conform` for LLM-based conformance checking.");
 
     Ok(())
 }
@@ -1783,27 +1825,46 @@ fn apply_changes(
     Ok(())
 }
 
-/// Open a DuckAgentFS instance from an ID or path
+/// Open a DuckAgentFS instance from an ID or path, auto-creating if needed
 pub async fn open_duckagentfs(id_or_path: &str) -> Result<DuckAgentFS> {
-    let path = if id_or_path == ":memory:" {
-        ":memory:".to_string()
+    let (path, auto_created) = if id_or_path == ":memory:" {
+        (":memory:".to_string(), false)
     } else if std::path::Path::new(id_or_path).exists() {
-        id_or_path.to_string()
+        (id_or_path.to_string(), false)
     } else {
+        // Validate agent ID: alphanumeric, hyphens, underscores only
+        let is_valid_id = !id_or_path.is_empty()
+            && id_or_path
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '-' || c == '_');
+
+        if !is_valid_id {
+            anyhow::bail!(
+                "Invalid agent ID '{}': must contain only alphanumeric characters, hyphens, and underscores",
+                id_or_path
+            );
+        }
+
         // Try as agent ID
         let agentfs_dir = agentfs_sdk::agentfs_dir();
         let db_path = agentfs_dir.join(format!("{}.duckdb", id_or_path));
+
         if db_path.exists() {
-            db_path.to_string_lossy().to_string()
+            (db_path.to_string_lossy().to_string(), false)
         } else {
-            anyhow::bail!(
-                "Database not found: {} (tried {} and {:?})",
-                id_or_path,
-                id_or_path,
-                db_path
-            );
+            // Database doesn't exist - will be auto-created
+            // Ensure .agentfs directory exists
+            if !agentfs_dir.exists() {
+                std::fs::create_dir_all(agentfs_dir)
+                    .with_context(|| format!("Failed to create directory: {agentfs_dir:?}"))?;
+            }
+            (db_path.to_string_lossy().to_string(), true)
         }
     };
+
+    if auto_created {
+        eprintln!("info: Creating new DuckDB database: {}", path);
+    }
 
     let config = DuckAgentFSConfig {
         path,
