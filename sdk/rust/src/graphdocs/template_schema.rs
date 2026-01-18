@@ -6,6 +6,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+use super::parser::{ParsedDocument, ParsedSection, SectionType};
 use super::relationships::RelationshipDecl;
 
 /// BMAD Template Format
@@ -204,6 +205,99 @@ impl BmadTemplate {
             None
         }
         find_recursive(&self.sections, &lower_title)
+    }
+
+    /// Convert YAML template to ParsedDocument for use with LLM transformers
+    ///
+    /// This creates a markdown-like representation of the template that can be
+    /// passed to the document transformer agent.
+    pub fn to_parsed_document(&self) -> ParsedDocument {
+        let mut sections = Vec::new();
+        let mut order_idx = 0u32;
+
+        // Recursively collect sections with proper heading levels
+        fn collect_sections(
+            template_sections: &[TemplateSection],
+            level: u8,
+            sections: &mut Vec<ParsedSection>,
+            order_idx: &mut u32,
+        ) {
+            for section in template_sections {
+                // Add heading for this section
+                sections.push(ParsedSection {
+                    id: section.id.clone(),
+                    section_type: SectionType::Heading,
+                    level: Some(level),
+                    content: section.title.clone(),
+                    order_idx: *order_idx,
+                    variables: Vec::new(),
+                });
+                *order_idx += 1;
+
+                // Add placeholder content based on section type
+                let placeholder = match section.section_type {
+                    SectionContentType::Choice => {
+                        if let Some(ref choices) = section.choices {
+                            format!("<!-- Options: {} -->", choices.join(", "))
+                        } else {
+                            "<!-- Select one -->".to_string()
+                        }
+                    }
+                    SectionContentType::Checklist => "- [ ] TODO".to_string(),
+                    SectionContentType::BulletList => "- TODO".to_string(),
+                    SectionContentType::NumberedList => "1. TODO".to_string(),
+                    SectionContentType::Table => {
+                        if let Some(ref columns) = section.columns {
+                            format!(
+                                "| {} |\n| {} |",
+                                columns.join(" | "),
+                                columns.iter().map(|_| "---").collect::<Vec<_>>().join(" | ")
+                            )
+                        } else {
+                            "| Column1 | Column2 |\n| --- | --- |".to_string()
+                        }
+                    }
+                    SectionContentType::TemplateText => {
+                        section.template.clone().unwrap_or_else(|| "TODO".to_string())
+                    }
+                    SectionContentType::Code => "```\n// TODO\n```".to_string(),
+                    SectionContentType::Mermaid => "```mermaid\ngraph TD\n    A --> B\n```".to_string(),
+                    _ => "TODO".to_string(),
+                };
+
+                sections.push(ParsedSection {
+                    id: format!("{}-content", section.id),
+                    section_type: SectionType::Paragraph,
+                    level: None,
+                    content: placeholder,
+                    order_idx: *order_idx,
+                    variables: Vec::new(),
+                });
+                *order_idx += 1;
+
+                // Recurse into nested sections
+                if let Some(ref nested) = section.sections {
+                    collect_sections(nested, level + 1, sections, order_idx);
+                }
+            }
+        }
+
+        collect_sections(&self.sections, 2, &mut sections, &mut order_idx);
+
+        // Get title from template metadata
+        let title = self
+            .template
+            .output
+            .title
+            .clone()
+            .or_else(|| Some(self.template.name.clone()));
+
+        ParsedDocument {
+            title,
+            sections,
+            variables: Vec::new(),
+            edges: Vec::new(),
+        }
     }
 }
 

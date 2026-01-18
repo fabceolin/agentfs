@@ -93,7 +93,24 @@ impl AgentTransformer {
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        serde_json::from_str(&stdout).context("Failed to parse TEA output as JSON")
+
+        // Try parsing as pure JSON first (tea-rust format)
+        // If that fails, extract JSON from decorated output (tea-python format)
+        let json_str = if stdout.trim_start().starts_with('{') {
+            // Pure JSON output (tea-rust)
+            stdout.to_string()
+        } else if let Some(start) = stdout.find("Final state: ") {
+            // Decorated output (tea-python) - extract JSON after "Final state: "
+            stdout[start + 13..].trim().to_string()
+        } else {
+            // Fallback: try to find last JSON object in output
+            stdout
+                .rfind('{')
+                .map(|i| stdout[i..].to_string())
+                .unwrap_or_else(|| stdout.to_string())
+        };
+
+        serde_json::from_str(&json_str).context("Failed to parse TEA output as JSON")
     }
 
     /// Normalize status using TEA agent
@@ -271,12 +288,20 @@ pub async fn batch_transform(args: &ConformArgs) -> Result<Vec<TransformResult>>
     let conformance_results = scan_directory(&args.dir).await?;
     let mut results = Vec::new();
 
-    // Load template
+    // Load template - handle both YAML and Markdown formats
     let template_path = TemplateManager::detect_template(&args.dir)
         .ok_or_else(|| anyhow!("No template found in directory"))?;
 
-    let template_content = tokio::fs::read_to_string(&template_path).await?;
-    let template = MarkdownParser::new().parse(&template_content)?;
+    let template = if TemplateManager::is_yaml_template(&template_path) {
+        // Load YAML template and convert to ParsedDocument
+        use super::template_schema::BmadTemplate;
+        let bmad_template = BmadTemplate::load(&template_path).await?;
+        bmad_template.to_parsed_document()
+    } else {
+        // Parse as Markdown
+        let template_content = tokio::fs::read_to_string(&template_path).await?;
+        MarkdownParser::new().parse(&template_content)?
+    };
 
     for conformance in conformance_results {
         if !conformance.is_conformant {
