@@ -1,0 +1,10 @@
+# Overlay for document-transformer-agent to use Ollama's gemma3n:e4b
+# Usage: docker run --rm --network=host -v $(pwd)/agents:/agents:ro ghcr.io/fabceolin/tea:latest run /agents/document-transformer-agent.yaml -f /agents/overlay/ollama-gemma3n.yaml --input '...'
+
+settings:
+  llm:
+    backend: openai
+    base_url: http://localhost:11434/v1
+    api_key: "not-needed"
+    model: gemma3n:e4b
+    n_ctx: 32768

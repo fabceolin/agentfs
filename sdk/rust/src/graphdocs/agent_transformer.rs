@@ -13,10 +13,11 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::process::Command;
 
+use super::conformance::BmadConformanceResult;
 use super::normalizer::ExtendedStatus;
 use super::parser::{MarkdownParser, ParsedDocument, SectionType};
 
-/// Conformance result for transformation (simplified version for agent use)
+/// Conformance result for transformation (simplified version for backward compatibility)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConformanceResult {
     pub file_path: String,
@@ -26,6 +27,179 @@ pub struct ConformanceResult {
     pub extra_sections: Vec<String>,
     pub type_mismatches: Vec<String>,
     pub suggestions: Vec<String>,
+}
+
+/// Enhanced conformance result with full details for TEA agents (STORY-7.5)
+///
+/// This struct provides the complete conformance information including:
+/// - Detailed missing sections with `is_required` flags
+/// - Type violations with expected vs actual types
+/// - Choice violations with valid options
+/// - Suggestions with `auto_fixable` flags
+///
+/// # JSON Schema
+///
+/// ```json
+/// {
+///   "file_path": "docs/stories/STORY-1.1.md",
+///   "template_id": "story-template-v2",
+///   "template_path": "story-tmpl.yaml",
+///   "is_conformant": false,
+///   "missing_sections": [
+///     { "section_id": "qa-results", "section_title": "QA Results", "is_required": true }
+///   ],
+///   "type_violations": [
+///     {
+///       "section_id": "tasks",
+///       "section_title": "Tasks",
+///       "expected_type": "checklist",
+///       "actual_content": "- Task 1...",
+///       "suggestion": "Content should be a checklist"
+///     }
+///   ],
+///   "choice_violations": [
+///     {
+///       "section_id": "status",
+///       "section_title": "Status",
+///       "expected_choices": ["Draft", "Approved", "Done"],
+///       "actual_value": "WIP"
+///     }
+///   ],
+///   "extra_sections": ["Random Notes"],
+///   "suggestions": [
+///     { "kind": "add_section", "description": "Add required section", "auto_fixable": true }
+///   ]
+/// }
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnhancedConformanceResult {
+    pub file_path: String,
+    pub template_id: String,
+    pub template_path: String,
+    pub is_conformant: bool,
+    pub missing_sections: Vec<MissingSectionInfo>,
+    pub type_violations: Vec<TypeViolationInfo>,
+    pub choice_violations: Vec<ChoiceViolationInfo>,
+    pub extra_sections: Vec<String>,
+    pub suggestions: Vec<SuggestionInfo>,
+}
+
+/// Missing section information for enhanced conformance
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MissingSectionInfo {
+    pub section_id: String,
+    pub section_title: String,
+    pub is_required: bool,
+}
+
+/// Type violation information for enhanced conformance
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TypeViolationInfo {
+    pub section_id: String,
+    pub section_title: String,
+    pub expected_type: String,
+    pub actual_content: String,
+    pub suggestion: String,
+}
+
+/// Choice violation information for enhanced conformance
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChoiceViolationInfo {
+    pub section_id: String,
+    pub section_title: String,
+    pub expected_choices: Vec<String>,
+    pub actual_value: String,
+}
+
+/// Suggestion information for enhanced conformance
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SuggestionInfo {
+    pub kind: String,
+    pub description: String,
+    pub auto_fixable: bool,
+}
+
+impl From<&BmadConformanceResult> for EnhancedConformanceResult {
+    fn from(result: &BmadConformanceResult) -> Self {
+        Self {
+            file_path: result.file_path.clone(),
+            template_id: result.template_id.clone(),
+            template_path: result.template_path.clone(),
+            is_conformant: result.is_conformant,
+            missing_sections: result
+                .missing_sections
+                .iter()
+                .map(|s| MissingSectionInfo {
+                    section_id: s.section_id.clone(),
+                    section_title: s.section_title.clone(),
+                    is_required: s.is_required,
+                })
+                .collect(),
+            type_violations: result
+                .type_violations
+                .iter()
+                .map(|v| TypeViolationInfo {
+                    section_id: v.section_id.clone(),
+                    section_title: v.section_title.clone(),
+                    expected_type: format!("{:?}", v.expected_type).to_lowercase(),
+                    actual_content: v.actual_content.clone(),
+                    suggestion: v.suggestion.clone(),
+                })
+                .collect(),
+            choice_violations: result
+                .choice_violations
+                .iter()
+                .map(|v| ChoiceViolationInfo {
+                    section_id: v.section_id.clone(),
+                    section_title: v.section_title.clone(),
+                    expected_choices: v.expected_choices.clone(),
+                    actual_value: v.actual_value.clone(),
+                })
+                .collect(),
+            extra_sections: result.extra_sections.clone(),
+            suggestions: result
+                .suggestions
+                .iter()
+                .map(|s| SuggestionInfo {
+                    kind: format!("{:?}", s.kind).to_lowercase(),
+                    description: s.description.clone(),
+                    auto_fixable: s.auto_fixable,
+                })
+                .collect(),
+        }
+    }
+}
+
+impl From<BmadConformanceResult> for EnhancedConformanceResult {
+    fn from(result: BmadConformanceResult) -> Self {
+        Self::from(&result)
+    }
+}
+
+impl From<&EnhancedConformanceResult> for ConformanceResult {
+    fn from(enhanced: &EnhancedConformanceResult) -> Self {
+        Self {
+            file_path: enhanced.file_path.clone(),
+            template_path: Some(enhanced.template_path.clone()),
+            is_conformant: enhanced.is_conformant,
+            missing_sections: enhanced
+                .missing_sections
+                .iter()
+                .map(|s| s.section_title.clone())
+                .collect(),
+            extra_sections: enhanced.extra_sections.clone(),
+            type_mismatches: enhanced
+                .type_violations
+                .iter()
+                .map(|v| v.section_title.clone())
+                .collect(),
+            suggestions: enhanced
+                .suggestions
+                .iter()
+                .map(|s| s.description.clone())
+                .collect(),
+        }
+    }
 }
 
 /// Agent transformer using TEA subprocess
@@ -151,19 +325,85 @@ impl AgentTransformer {
         })
     }
 
-    /// Transform document to conform to template
+    /// Transform document to conform to template (legacy simplified conformance)
     pub async fn transform_to_template(
         &self,
         doc: &ParsedDocument,
         template: &ParsedDocument,
         conformance: &ConformanceResult,
     ) -> Result<String> {
+        // Convert simplified to enhanced format for backward compatibility
+        let enhanced = EnhancedConformanceResult {
+            file_path: conformance.file_path.clone(),
+            template_id: String::new(),
+            template_path: conformance.template_path.clone().unwrap_or_default(),
+            is_conformant: conformance.is_conformant,
+            missing_sections: conformance
+                .missing_sections
+                .iter()
+                .map(|s| MissingSectionInfo {
+                    section_id: s.to_lowercase().replace(' ', "-"),
+                    section_title: s.clone(),
+                    is_required: true, // Assume required for legacy format
+                })
+                .collect(),
+            type_violations: conformance
+                .type_mismatches
+                .iter()
+                .map(|s| TypeViolationInfo {
+                    section_id: s.to_lowercase().replace(' ', "-"),
+                    section_title: s.clone(),
+                    expected_type: "unknown".to_string(),
+                    actual_content: String::new(),
+                    suggestion: format!("Fix type for section: {}", s),
+                })
+                .collect(),
+            choice_violations: vec![],
+            extra_sections: conformance.extra_sections.clone(),
+            suggestions: conformance
+                .suggestions
+                .iter()
+                .map(|s| SuggestionInfo {
+                    kind: "unknown".to_string(),
+                    description: s.clone(),
+                    auto_fixable: false,
+                })
+                .collect(),
+        };
+        self.transform_to_template_enhanced(doc, template, &enhanced)
+            .await
+    }
+
+    /// Transform document to conform to template with full enhanced conformance data (STORY-7.5)
+    ///
+    /// This method passes the complete conformance information to TEA agents including:
+    /// - Missing sections with `is_required` flags
+    /// - Type violations with `expected_type` details
+    /// - Choice violations with `expected_choices`
+    /// - Suggestions with `auto_fixable` flags
+    pub async fn transform_to_template_enhanced(
+        &self,
+        doc: &ParsedDocument,
+        template: &ParsedDocument,
+        conformance: &EnhancedConformanceResult,
+    ) -> Result<String> {
         let input = json!({
             "document": self.doc_to_json(doc),
             "template": self.doc_to_json(template),
             "conformance": {
+                "file_path": conformance.file_path,
+                "template_id": conformance.template_id,
+                "template_path": conformance.template_path,
+                "is_conformant": conformance.is_conformant,
                 "missing_sections": conformance.missing_sections,
-                "type_mismatches": conformance.type_mismatches,
+                "type_violations": conformance.type_violations,
+                "choice_violations": conformance.choice_violations,
+                "extra_sections": conformance.extra_sections,
+                "suggestions": conformance.suggestions,
+                // Legacy fields for backward compatibility with older agents
+                "type_mismatches": conformance.type_violations.iter()
+                    .map(|v| v.section_title.clone())
+                    .collect::<Vec<_>>(),
             }
         });
 
@@ -179,7 +419,8 @@ impl AgentTransformer {
 
         if content.is_empty() {
             // Fallback to rule-based if LLM returns empty
-            return self.transform_rule_based(doc, template, conformance);
+            let simplified = ConformanceResult::from(conformance);
+            return self.transform_rule_based(doc, template, &simplified);
         }
 
         Ok(content)
@@ -580,5 +821,154 @@ mod tests {
             .unwrap();
         assert!(result.contains("## Status"));
         assert!(result.contains("## Tasks"));
+    }
+
+    #[test]
+    fn test_enhanced_conformance_result_from_bmad() {
+        // Test From<BmadConformanceResult> for EnhancedConformanceResult (STORY-7.5)
+        use crate::graphdocs::conformance::{
+            BmadConformanceResult, ChoiceViolation, ConformanceSuggestion, MissingSection,
+            SuggestionKind, TypeViolation,
+        };
+        use crate::graphdocs::template_schema::SectionContentType;
+
+        let bmad_result = BmadConformanceResult {
+            file_path: "test.md".to_string(),
+            template_id: "story-template".to_string(),
+            template_path: "story-tmpl.yaml".to_string(),
+            is_conformant: false,
+            missing_sections: vec![MissingSection {
+                section_id: "qa".to_string(),
+                section_title: "QA Results".to_string(),
+                is_required: true,
+            }],
+            type_violations: vec![TypeViolation {
+                section_id: "tasks".to_string(),
+                section_title: "Tasks".to_string(),
+                expected_type: SectionContentType::Checklist,
+                actual_content: "- Task 1".to_string(),
+                suggestion: "Use checklist format".to_string(),
+            }],
+            choice_violations: vec![ChoiceViolation {
+                section_id: "status".to_string(),
+                section_title: "Status".to_string(),
+                expected_choices: vec!["Draft".to_string(), "Done".to_string()],
+                actual_value: "WIP".to_string(),
+            }],
+            extra_sections: vec!["Random".to_string()],
+            suggestions: vec![ConformanceSuggestion {
+                kind: SuggestionKind::AddSection,
+                description: "Add QA section".to_string(),
+                auto_fixable: true,
+            }],
+        };
+
+        let enhanced: EnhancedConformanceResult = bmad_result.into();
+
+        assert_eq!(enhanced.file_path, "test.md");
+        assert_eq!(enhanced.template_id, "story-template");
+        assert!(!enhanced.is_conformant);
+        assert_eq!(enhanced.missing_sections.len(), 1);
+        assert!(enhanced.missing_sections[0].is_required);
+        assert_eq!(enhanced.type_violations.len(), 1);
+        assert_eq!(enhanced.type_violations[0].expected_type, "checklist");
+        assert_eq!(enhanced.choice_violations.len(), 1);
+        assert_eq!(enhanced.choice_violations[0].actual_value, "WIP");
+        assert_eq!(enhanced.extra_sections, vec!["Random".to_string()]);
+        assert_eq!(enhanced.suggestions.len(), 1);
+        assert!(enhanced.suggestions[0].auto_fixable);
+    }
+
+    #[test]
+    fn test_enhanced_conformance_result_serialization() {
+        // Test EnhancedConformanceResult JSON serialization (STORY-7.5)
+        let enhanced = EnhancedConformanceResult {
+            file_path: "test.md".to_string(),
+            template_id: "story".to_string(),
+            template_path: "story-tmpl.yaml".to_string(),
+            is_conformant: false,
+            missing_sections: vec![MissingSectionInfo {
+                section_id: "qa".to_string(),
+                section_title: "QA".to_string(),
+                is_required: true,
+            }],
+            type_violations: vec![],
+            choice_violations: vec![ChoiceViolationInfo {
+                section_id: "status".to_string(),
+                section_title: "Status".to_string(),
+                expected_choices: vec!["Draft".to_string()],
+                actual_value: "Bad".to_string(),
+            }],
+            extra_sections: vec![],
+            suggestions: vec![SuggestionInfo {
+                kind: "add_section".to_string(),
+                description: "Add QA".to_string(),
+                auto_fixable: true,
+            }],
+        };
+
+        let json = serde_json::to_string(&enhanced).unwrap();
+        assert!(json.contains("\"is_required\":true"));
+        assert!(json.contains("\"auto_fixable\":true"));
+
+        // Roundtrip
+        let parsed: EnhancedConformanceResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.file_path, "test.md");
+        assert!(parsed.missing_sections[0].is_required);
+    }
+
+    #[test]
+    fn test_conformance_result_from_enhanced() {
+        // Test From<EnhancedConformanceResult> for ConformanceResult (backward compat)
+        let enhanced = EnhancedConformanceResult {
+            file_path: "doc.md".to_string(),
+            template_id: "tmpl".to_string(),
+            template_path: "tmpl.yaml".to_string(),
+            is_conformant: false,
+            missing_sections: vec![
+                MissingSectionInfo {
+                    section_id: "s1".to_string(),
+                    section_title: "Section 1".to_string(),
+                    is_required: true,
+                },
+                MissingSectionInfo {
+                    section_id: "s2".to_string(),
+                    section_title: "Section 2".to_string(),
+                    is_required: false,
+                },
+            ],
+            type_violations: vec![TypeViolationInfo {
+                section_id: "tasks".to_string(),
+                section_title: "Tasks".to_string(),
+                expected_type: "checklist".to_string(),
+                actual_content: "- item".to_string(),
+                suggestion: "fix".to_string(),
+            }],
+            choice_violations: vec![],
+            extra_sections: vec!["Extra".to_string()],
+            suggestions: vec![SuggestionInfo {
+                kind: "add_section".to_string(),
+                description: "Add Section 1".to_string(),
+                auto_fixable: true,
+            }],
+        };
+
+        let simplified = ConformanceResult::from(&enhanced);
+
+        assert_eq!(simplified.file_path, "doc.md");
+        assert_eq!(simplified.template_path, Some("tmpl.yaml".to_string()));
+        assert!(!simplified.is_conformant);
+        // Missing sections converted to just titles
+        assert_eq!(simplified.missing_sections.len(), 2);
+        assert!(simplified.missing_sections.contains(&"Section 1".to_string()));
+        assert!(simplified.missing_sections.contains(&"Section 2".to_string()));
+        // Type violations converted to just titles
+        assert_eq!(simplified.type_mismatches.len(), 1);
+        assert!(simplified.type_mismatches.contains(&"Tasks".to_string()));
+        // Extra sections preserved
+        assert_eq!(simplified.extra_sections, vec!["Extra".to_string()]);
+        // Suggestions converted to just descriptions
+        assert_eq!(simplified.suggestions.len(), 1);
+        assert!(simplified.suggestions.contains(&"Add Section 1".to_string()));
     }
 }

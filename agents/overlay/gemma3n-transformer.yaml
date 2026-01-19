@@ -1,8 +1,13 @@
 # Overlay for document-transformer-agent to use Gemma3n:e4b via local GGUF
 # Usage: TEA_IMAGE=ghcr.io/fabceolin/tea:gemma3n-e4b tea-docker run agents/document-transformer-agent.yaml -f agents/overlay/gemma3n-transformer.yaml --input '...'
 # Note: Uses TEA_IMAGE which has gemma3n:e4b model built-in
+#
+# gemma3n:e4b specs:
+#   - Native context window: 32,768 tokens (32K)
+#   - Architecture: Mobile-first (NPU/CPU optimized)
+#   - "E4B" = Effective 4 Billion parameters (compressed 8B sparse)
 
 settings:
   llm:
     backend: local
-    n_ctx: 4096
+    n_ctx: 32768  # Full native context window for gemma3n:e4b

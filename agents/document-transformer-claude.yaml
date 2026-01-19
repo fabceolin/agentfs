@@ -87,6 +87,7 @@ nodes:
       local resp = state.transform_result or {}
       local content = resp.content or ""
       return { output_content = content }
+    goto: __end__
 
   - name: passthrough
     language: lua

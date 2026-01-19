@@ -1,5 +1,13 @@
 # agents/document-transformer-agent.yaml
 # RUN: TEA_IMAGE=ghcr.io/fabceolin/tea:gemma3n-e4b tea-docker run document-transformer-agent.yaml --input '...'
+#
+# Enhanced conformance schema (STORY-7.5):
+# The `conformance` input now includes detailed violation information:
+# - missing_sections: [{section_id, section_title, is_required}, ...]
+# - type_violations: [{section_id, section_title, expected_type, actual_content, suggestion}, ...]
+# - choice_violations: [{section_id, section_title, expected_choices, actual_value}, ...]
+# - extra_sections: [string, ...]
+# - suggestions: [{kind, description, auto_fixable}, ...]
 
 name: document-transformer
 description: Transforms documents to match template structure using local LLM
@@ -7,90 +15,335 @@ description: Transforms documents to match template structure using local LLM
 state_schema:
   document: object
   template: object
-  conformance: object
+  conformance: object  # EnhancedConformanceResult (STORY-7.5)
   output_content: str
   needs_transform: bool
+  # Intermediate analysis state
+  gaps: object
+  required_missing: list
+  optional_missing: list
+  auto_fixable_issues: list
+  # Prompt components
+  system_instruction: str
+  business_rules: str
+  target_structure: str
+  input_text: str
+  final_prompt: str
 
 settings:
   llm:
     backend: local
-    n_ctx: 4096
+    n_ctx: 32768  # Support large documents (gemma3n:e4b supports 32K native)
 
 config:
   raise_exceptions: true
 
 nodes:
+  # Step 1: Analyze gaps using enhanced conformance data (STORY-7.5)
   - name: analyze_gaps
     language: lua
     run: |
       local conformance = state.conformance or {}
       local missing = conformance.missing_sections or {}
-      local type_issues = conformance.type_mismatches or {}
-      local needs_transform = #missing > 0 or #type_issues > 0
+      local type_violations = conformance.type_violations or {}
+      local choice_violations = conformance.choice_violations or {}
+      local extra = conformance.extra_sections or {}
+      local suggestions = conformance.suggestions or {}
+
+      -- Separate required vs optional missing sections
+      local required_missing = {}
+      local optional_missing = {}
+      for _, m in ipairs(missing) do
+        if type(m) == "table" then
+          if m.is_required then
+            table.insert(required_missing, m.section_title or m.section_id)
+          else
+            table.insert(optional_missing, m.section_title or m.section_id)
+          end
+        else
+          table.insert(required_missing, m)
+        end
+      end
+
+      -- Extract auto-fixable issues
+      local auto_fixable = {}
+      for _, s in ipairs(suggestions) do
+        if type(s) == "table" and s.auto_fixable then
+          table.insert(auto_fixable, s.description)
+        end
+      end
+
+      -- Build type mismatch list with expected types
+      local type_issues = {}
+      for _, v in ipairs(type_violations) do
+        if type(v) == "table" then
+          table.insert(type_issues, {
+            section = v.section_title,
+            expected = v.expected_type or "unknown",
+            suggestion = v.suggestion or ""
+          })
+        end
+      end
+
+      -- Legacy compatibility
+      local legacy_mismatches = conformance.type_mismatches or {}
+      for _, m in ipairs(legacy_mismatches) do
+        table.insert(type_issues, { section = m, expected = "unknown", suggestion = "" })
+      end
+
+      local needs_transform = #required_missing > 0 or #type_issues > 0 or #choice_violations > 0
+
       return {
         gaps = {
-          missing_sections = missing,
-          type_mismatches = type_issues
+          missing_sections = required_missing,
+          optional_sections = optional_missing,
+          type_violations = type_issues,
+          choice_violations = choice_violations,
+          extra_sections = extra
         },
+        required_missing = required_missing,
+        optional_missing = optional_missing,
+        auto_fixable_issues = auto_fixable,
         needs_transform = needs_transform
       }
     goto:
-      - if: "state.needs_transform"
-        to: generate_transform_prompt
+      - if: "state.conformance.is_conformant == false"
+        to: build_system_instruction
       - to: passthrough
 
-  - name: generate_transform_prompt
+  # Step 2: Build SYSTEM INSTRUCTION
+  - name: build_system_instruction
+    language: lua
+    run: |
+      local instruction = "### SYSTEM INSTRUCTION ###\n" ..
+        "You are a strict Document Transformation Engine. Your goal is to refactor the INPUT_TEXT into the TARGET_STRUCTURE following the BUSINESS_RULES exactly.\n\n" ..
+        "CRITICAL CONSTRAINTS:\n" ..
+        "- Output ONLY the final Markdown document\n" ..
+        "- No explanations, no comments, no code block markers (```)\n" ..
+        "- No conversational text before or after the document\n" ..
+        "- Start directly with the document title (# Title)"
+
+      return { system_instruction = instruction }
+
+  # Step 3: Build BUSINESS_RULES dynamically from conformance data
+  - name: build_business_rules
+    language: lua
+    run: |
+      local gaps = state.gaps or {}
+      local conformance = state.conformance or {}
+      local rules = {}
+      local rule_num = 1
+
+      -- Rule: Fidelity (always present)
+      table.insert(rules, rule_num .. ". **Fidelity**: Preserve ALL original textual content exactly. Do not summarize, paraphrase, or omit any text.")
+      rule_num = rule_num + 1
+
+      -- Rule: Status Mapping (if choice violations exist)
+      local choice_violations = gaps.choice_violations or {}
+      for _, cv in ipairs(choice_violations) do
+        if type(cv) == "table" then
+          local choices_str = table.concat(cv.expected_choices or {}, ", ")
+          table.insert(rules, rule_num .. ". **" .. cv.section_title .. " Mapping**: The value '" .. (cv.actual_value or "") .. "' is invalid. Map it to the closest valid option from: [" .. choices_str .. "].")
+          rule_num = rule_num + 1
+        end
+      end
+
+      -- Rule: Type Formatting (if type violations exist)
+      local type_violations = gaps.type_violations or {}
+      for _, tv in ipairs(type_violations) do
+        if type(tv) == "table" then
+          local format_hint = ""
+          if tv.expected == "checklist" then
+            format_hint = "Convert to Markdown checklist format: '- [ ] Item'"
+          elseif tv.expected == "numbered_list" then
+            format_hint = "Convert to numbered list format: '1. Item'"
+          elseif tv.expected == "bullet_list" then
+            format_hint = "Convert to bullet list format: '- Item'"
+          else
+            format_hint = "Ensure correct format for type: " .. tv.expected
+          end
+          table.insert(rules, rule_num .. ". **" .. tv.section .. " Formatting**: " .. format_hint)
+          rule_num = rule_num + 1
+        end
+      end
+
+      -- Rule: Missing Required Sections
+      local required = gaps.missing_sections or {}
+      if #required > 0 then
+        local sections_str = table.concat(required, ", ")
+        table.insert(rules, rule_num .. ". **Missing Required Sections**: Create these sections with placeholder '[TODO: Add content]': " .. sections_str)
+        rule_num = rule_num + 1
+      end
+
+      -- Rule: Missing Optional Sections
+      local optional = gaps.optional_sections or {}
+      if #optional > 0 then
+        local sections_str = table.concat(optional, ", ")
+        table.insert(rules, rule_num .. ". **Missing Optional Sections**: Create these sections with placeholder '[Optional: Add if needed]': " .. sections_str)
+        rule_num = rule_num + 1
+      end
+
+      -- Rule: Extra Sections
+      local extra = gaps.extra_sections or {}
+      if #extra > 0 then
+        local sections_str = table.concat(extra, ", ")
+        table.insert(rules, rule_num .. ". **Extra Sections**: The following sections are not in the template. Move them to the end under '## Additional Notes': " .. sections_str)
+        rule_num = rule_num + 1
+      end
+
+      -- Rule: Section Order (always present)
+      table.insert(rules, rule_num .. ". **Section Order**: Maintain the exact order of sections as shown in TARGET_STRUCTURE.")
+      rule_num = rule_num + 1
+
+      -- Rule: Output Format (always present)
+      table.insert(rules, rule_num .. ". **Output Format**: Output ONLY the raw Markdown. No preamble, no summary, no code fences.")
+
+      local business_rules = "### BUSINESS_RULES ###\n" .. table.concat(rules, "\n")
+      return { business_rules = business_rules }
+
+  # Step 4: Build TARGET_STRUCTURE from template
+  - name: build_target_structure
+    language: lua
+    run: |
+      local template = state.template or {}
+      local gaps = state.gaps or {}
+      local lines = {}
+
+      table.insert(lines, "### TARGET_STRUCTURE ###")
+      table.insert(lines, "```")
+      table.insert(lines, "# [Document Title]")
+      table.insert(lines, "")
+
+      -- Extract template sections
+      for _, s in ipairs(template.sections or {}) do
+        if s.section_type == "heading" then
+          local level = s.level or 2
+          local prefix = string.rep("#", level)
+          table.insert(lines, prefix .. " " .. s.content)
+          table.insert(lines, "[Content]")
+          table.insert(lines, "")
+        end
+      end
+
+      -- Add placeholder for extra sections if needed
+      local extra = gaps.extra_sections or {}
+      if #extra > 0 then
+        table.insert(lines, "## Additional Notes")
+        table.insert(lines, "[Moved extra content here]")
+        table.insert(lines, "")
+      end
+
+      table.insert(lines, "```")
+
+      return { target_structure = table.concat(lines, "\n") }
+
+  # Step 5: Build INPUT_TEXT from document
+  - name: build_input_text
     language: lua
     run: |
       local doc = state.document or {}
-      local template = state.template or {}
-      local gaps = state.gaps or {}
-      local template_sections = {}
-      for _, s in ipairs(template.sections or {}) do
-        if s.section_type == "heading" then
-          table.insert(template_sections, s.content)
-        end
-      end
-      local doc_content = {}
-      for _, s in ipairs(doc.sections or {}) do
-        table.insert(doc_content, s.content)
-      end
-      local title = doc.title or ""
-      local missing_str = table.concat(gaps.missing_sections or {}, ", ")
-      local tmpl_str = table.concat(template_sections, "\n")
-      local doc_str = table.concat(doc_content, "\n\n")
-      local prompt = "Transform this document to match the template structure.\n\n"
-      prompt = prompt .. "Current Document Title: " .. title .. "\n\n"
-      prompt = prompt .. "Missing Sections: " .. missing_str .. "\n\n"
-      prompt = prompt .. "Template Sections:\n" .. tmpl_str .. "\n\n"
-      prompt = prompt .. "Current Document Content:\n" .. doc_str .. "\n\n"
-      prompt = prompt .. "Output the transformed document in markdown format.\n"
-      prompt = prompt .. "Preserve existing content, add placeholders for missing sections."
-      return { transform_prompt = prompt }
+      local lines = {}
 
+      table.insert(lines, "### INPUT_TEXT ###")
+      table.insert(lines, "```markdown")
+
+      -- Add title
+      if doc.title then
+        table.insert(lines, "# " .. doc.title)
+        table.insert(lines, "")
+      end
+
+      -- Add all sections
+      for _, s in ipairs(doc.sections or {}) do
+        if s.section_type == "heading" then
+          local level = s.level or 2
+          local prefix = string.rep("#", level)
+          table.insert(lines, prefix .. " " .. s.content)
+        else
+          table.insert(lines, s.content or "")
+        end
+        table.insert(lines, "")
+      end
+
+      table.insert(lines, "```")
+
+      return { input_text = table.concat(lines, "\n") }
+
+  # Step 6: Assemble final prompt
+  - name: assemble_prompt
+    language: lua
+    run: |
+      local parts = {
+        state.system_instruction or "",
+        "",
+        state.business_rules or "",
+        "",
+        state.target_structure or "",
+        "",
+        state.input_text or "",
+        "",
+        "### OUTPUT ###",
+        "Transform the INPUT_TEXT now. Output only the Markdown document:"
+      }
+
+      return { final_prompt = table.concat(parts, "\n") }
+
+  # Step 7: Send to LLM
   - name: transform_with_llm
     uses: llm.chat
     with:
       messages:
         - role: user
-          content: "{{ state.transform_prompt }}"
-      max_tokens: 2048
-      temperature: 0.2
+          content: "{{ state.final_prompt }}"
+      max_tokens: 4096
+      temperature: 0.1
     output: transform_result
 
+  # Step 8: Extract and clean response
   - name: extract_transformed
     language: lua
     run: |
       local resp = state.transform_result or {}
       local content = resp.content or ""
-      return { output_content = content }
 
+      -- Remove any code fence markers if LLM included them
+      content = content:gsub("^```markdown%s*", "")
+      content = content:gsub("^```%s*", "")
+      content = content:gsub("%s*```$", "")
+
+      -- Remove any preamble before the first heading
+      local first_heading = content:find("#")
+      if first_heading and first_heading > 1 then
+        content = content:sub(first_heading)
+      end
+
+      -- Trim whitespace
+      content = content:gsub("^%s+", ""):gsub("%s+$", "")
+
+      return { output_content = content }
+    goto: __end__
+
+  # Passthrough for conformant documents
   - name: passthrough
     language: lua
     run: |
       local doc = state.document or {}
-      local content_parts = {}
-      for _, s in ipairs(doc.sections or {}) do
-        table.insert(content_parts, s.content or "")
+      local lines = {}
+
+      if doc.title then
+        table.insert(lines, "# " .. doc.title)
+        table.insert(lines, "")
       end
-      return { output_content = table.concat(content_parts, "\n\n") }
+
+      for _, s in ipairs(doc.sections or {}) do
+        if s.section_type == "heading" then
+          local level = s.level or 2
+          local prefix = string.rep("#", level)
+          table.insert(lines, prefix .. " " .. s.content)
+        else
+          table.insert(lines, s.content or "")
+        end
+        table.insert(lines, "")
+      end
+
+      return { output_content = table.concat(lines, "\n") }

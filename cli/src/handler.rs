@@ -1673,12 +1673,17 @@ pub async fn run_background_conformance(
 }
 
 /// Run the conformance pipeline.
+///
+/// Returns the transformed content if non-conformant, or original content if conformant.
+/// Uses EnhancedConformanceResult (STORY-7.5) to pass full conformance details to TEA agents.
 async fn run_conformance_pipeline(
     content: &str,
     template_path: &Path,
     config: &ConformanceConfig,
 ) -> Result<String> {
-    use agentfs_sdk::graphdocs::agent_transformer::{AgentTransformer, ConformanceResult};
+    use agentfs_sdk::graphdocs::agent_transformer::{
+        AgentTransformer, ConformanceResult, EnhancedConformanceResult,
+    };
     use agentfs_sdk::graphdocs::parser::MarkdownParser;
     use agentfs_sdk::graphdocs::template_schema::BmadTemplate;
 
@@ -1705,35 +1710,41 @@ async fn run_conformance_pipeline(
         (template, None)
     };
 
-    // Check conformance
+    // Check conformance - preserve full result for enhanced reporting (STORY-7.5)
     let mut manager = TemplateManager::new();
-    let (missing_sections, type_mismatches, is_conformant) = if let Some(ref bmad) = bmad_template {
-        manager
-            .load_bmad_template_sync(template_path)
-            .map_err(|e| Error::Custom(format!("Failed to load BMAD template: {}", e)))?;
-        let result = manager.check_bmad_conformance(&doc, bmad, template_path);
-        (
-            result
-                .missing_sections
-                .iter()
-                .map(|s| s.section_title.clone())
-                .collect(),
-            result
-                .type_violations
-                .iter()
-                .map(|v| v.section_title.clone())
-                .collect(),
-            result.is_conformant,
-        )
-    } else {
-        manager
-            .load_markdown_template_sync(template_path)
-            .map_err(|e| Error::Custom(format!("Failed to load markdown template: {}", e)))?;
-        let result = manager.check_markdown_conformance(&doc, &template_doc, template_path);
-        (result.missing_sections, vec![], result.is_conformant)
-    };
 
-    // If conformant, return original
+    // For YAML templates, use enhanced conformance with full details
+    // For markdown templates, use simplified conformance
+    let (enhanced_result, simplified_result): (Option<EnhancedConformanceResult>, Option<ConformanceResult>) =
+        if let Some(ref bmad) = bmad_template {
+            manager
+                .load_bmad_template_sync(template_path)
+                .map_err(|e| Error::Custom(format!("Failed to load BMAD template: {}", e)))?;
+            let bmad_result = manager.check_bmad_conformance(&doc, bmad, template_path);
+            let enhanced: EnhancedConformanceResult = bmad_result.into();
+            (Some(enhanced), None)
+        } else {
+            manager
+                .load_markdown_template_sync(template_path)
+                .map_err(|e| Error::Custom(format!("Failed to load markdown template: {}", e)))?;
+            let md_result = manager.check_markdown_conformance(&doc, &template_doc, template_path);
+            let simplified = ConformanceResult {
+                file_path: String::new(),
+                template_path: Some(template_path.display().to_string()),
+                is_conformant: md_result.is_conformant,
+                missing_sections: md_result.missing_sections,
+                extra_sections: md_result.extra_sections,
+                type_mismatches: vec![],
+                suggestions: vec![],
+            };
+            (None, Some(simplified))
+        };
+
+    // Check if conformant
+    let is_conformant = enhanced_result.as_ref().map(|e| e.is_conformant)
+        .or_else(|| simplified_result.as_ref().map(|s| s.is_conformant))
+        .unwrap_or(true);
+
     if is_conformant {
         return Ok(content.to_string());
     }
@@ -1747,34 +1758,52 @@ async fn run_conformance_pipeline(
         transformer = transformer.with_model_path(model_path.clone());
     }
 
-    let conformance_result = ConformanceResult {
-        file_path: String::new(),
-        template_path: Some(template_path.display().to_string()),
-        is_conformant: false,
-        missing_sections,
-        extra_sections: vec![],
-        type_mismatches,
-        suggestions: vec![],
-    };
-
-    // Try TEA, fallback to rule-based
-    if transformer.check_tea_available().await.unwrap_or(false) {
-        match transformer
-            .transform_to_template(&doc, &template_doc, &conformance_result)
-            .await
-        {
-            Ok(content) => Ok(content),
-            Err(e) => {
-                tracing::warn!("TEA failed, using rule-based: {}", e);
-                transformer
-                    .transform_rule_based(&doc, &template_doc, &conformance_result)
-                    .map_err(|e| Error::Custom(format!("Rule-based transform failed: {}", e)))
+    // Use enhanced transform for YAML templates (full data), simplified for markdown
+    if let Some(ref enhanced) = enhanced_result {
+        // YAML template: use enhanced transform with full conformance data (STORY-7.5)
+        if transformer.check_tea_available().await.unwrap_or(false) {
+            match transformer
+                .transform_to_template_enhanced(&doc, &template_doc, enhanced)
+                .await
+            {
+                Ok(content) => Ok(content),
+                Err(e) => {
+                    tracing::warn!("TEA failed, using rule-based: {}", e);
+                    let simplified = ConformanceResult::from(enhanced);
+                    transformer
+                        .transform_rule_based(&doc, &template_doc, &simplified)
+                        .map_err(|e| Error::Custom(format!("Rule-based transform failed: {}", e)))
+                }
             }
+        } else {
+            let simplified = ConformanceResult::from(enhanced);
+            transformer
+                .transform_rule_based(&doc, &template_doc, &simplified)
+                .map_err(|e| Error::Custom(format!("Rule-based transform failed: {}", e)))
+        }
+    } else if let Some(ref simplified) = simplified_result {
+        // Markdown template: use simplified transform
+        if transformer.check_tea_available().await.unwrap_or(false) {
+            match transformer
+                .transform_to_template(&doc, &template_doc, simplified)
+                .await
+            {
+                Ok(content) => Ok(content),
+                Err(e) => {
+                    tracing::warn!("TEA failed, using rule-based: {}", e);
+                    transformer
+                        .transform_rule_based(&doc, &template_doc, simplified)
+                        .map_err(|e| Error::Custom(format!("Rule-based transform failed: {}", e)))
+                }
+            }
+        } else {
+            transformer
+                .transform_rule_based(&doc, &template_doc, simplified)
+                .map_err(|e| Error::Custom(format!("Rule-based transform failed: {}", e)))
         }
     } else {
-        transformer
-            .transform_rule_based(&doc, &template_doc, &conformance_result)
-            .map_err(|e| Error::Custom(format!("Rule-based transform failed: {}", e)))
+        // Should never happen
+        Ok(content.to_string())
     }
 }
 

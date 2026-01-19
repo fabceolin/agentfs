@@ -46,7 +46,9 @@ pub use conformance::{
 };
 
 pub use agent_transformer::{
-    batch_transform, AgentTransformer, ConformArgs, ConformanceResult, TransformResult,
+    batch_transform, AgentTransformer, ChoiceViolationInfo, ConformArgs, ConformanceResult,
+    EnhancedConformanceResult, MissingSectionInfo, SuggestionInfo, TransformResult,
+    TypeViolationInfo,
 };
 
 pub use relationships::{

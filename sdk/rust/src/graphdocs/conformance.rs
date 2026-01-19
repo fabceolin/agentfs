@@ -4,6 +4,7 @@
 
 use anyhow::Result;
 use glob::Pattern;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -23,7 +24,7 @@ pub const TEMPLATE_PATTERNS: &[&str] = &[
 ];
 
 /// Enhanced conformance result for BMAD templates
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BmadConformanceResult {
     pub file_path: String,
     pub template_id: String,
@@ -32,17 +33,18 @@ pub struct BmadConformanceResult {
     pub missing_sections: Vec<MissingSection>,
     pub type_violations: Vec<TypeViolation>,
     pub choice_violations: Vec<ChoiceViolation>,
+    pub extra_sections: Vec<String>,
     pub suggestions: Vec<ConformanceSuggestion>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MissingSection {
     pub section_id: String,
     pub section_title: String,
     pub is_required: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TypeViolation {
     pub section_id: String,
     pub section_title: String,
@@ -51,7 +53,7 @@ pub struct TypeViolation {
     pub suggestion: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChoiceViolation {
     pub section_id: String,
     pub section_title: String,
@@ -59,14 +61,15 @@ pub struct ChoiceViolation {
     pub actual_value: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConformanceSuggestion {
     pub kind: SuggestionKind,
     pub description: String,
     pub auto_fixable: bool,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SuggestionKind {
     AddSection,
     RemoveSection,
@@ -77,7 +80,7 @@ pub enum SuggestionKind {
 }
 
 /// Simple markdown template conformance result
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MarkdownConformanceResult {
     pub file_path: String,
     pub template_path: String,
@@ -186,6 +189,7 @@ impl TemplateManager {
             missing_sections: Vec::new(),
             type_violations: Vec::new(),
             choice_violations: Vec::new(),
+            extra_sections: Vec::new(),
             suggestions: Vec::new(),
         };
 
@@ -197,10 +201,36 @@ impl TemplateManager {
             .map(|s| (s.content.to_lowercase(), s))
             .collect();
 
+        // Build set of template section titles (including nested)
+        let template_titles = self.collect_template_titles(&template.sections);
+
         // Check each template section (including nested)
         self.check_sections_recursive(&template.sections, &doc_sections, doc, &mut result);
 
+        // Detect extra sections (in document but not in template)
+        for (title_lower, section) in &doc_sections {
+            // Skip the document title (level 1 heading)
+            if section.level == Some(1) {
+                continue;
+            }
+            if !template_titles.contains(title_lower) {
+                result.extra_sections.push(section.content.clone());
+            }
+        }
+
         result
+    }
+
+    /// Collect all template section titles (including nested) as lowercase
+    fn collect_template_titles(&self, sections: &[TemplateSection]) -> std::collections::HashSet<String> {
+        let mut titles = std::collections::HashSet::new();
+        for section in sections {
+            titles.insert(section.title.to_lowercase());
+            if let Some(ref nested) = section.sections {
+                titles.extend(self.collect_template_titles(nested));
+            }
+        }
+        titles
     }
 
     fn check_sections_recursive(
@@ -829,5 +859,103 @@ sections:
         let manager = TemplateManager::new();
         assert!(manager.bmad_templates.is_empty());
         assert!(manager.markdown_templates.is_empty());
+    }
+
+    #[test]
+    fn test_bmad_conformance_result_serialization() {
+        // Test that BmadConformanceResult can be serialized to JSON (STORY-7.5)
+        let result = BmadConformanceResult {
+            file_path: "test.md".to_string(),
+            template_id: "story-template".to_string(),
+            template_path: "story-tmpl.yaml".to_string(),
+            is_conformant: false,
+            missing_sections: vec![MissingSection {
+                section_id: "qa-results".to_string(),
+                section_title: "QA Results".to_string(),
+                is_required: true,
+            }],
+            type_violations: vec![],
+            choice_violations: vec![ChoiceViolation {
+                section_id: "status".to_string(),
+                section_title: "Status".to_string(),
+                expected_choices: vec!["Draft".to_string(), "Done".to_string()],
+                actual_value: "WIP".to_string(),
+            }],
+            extra_sections: vec!["Random Notes".to_string()],
+            suggestions: vec![ConformanceSuggestion {
+                kind: SuggestionKind::AddSection,
+                description: "Add required section: ## QA Results".to_string(),
+                auto_fixable: true,
+            }],
+        };
+
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"file_path\":\"test.md\""));
+        assert!(json.contains("\"is_required\":true"));
+        assert!(json.contains("\"auto_fixable\":true"));
+        assert!(json.contains("\"add_section\"")); // snake_case from serde rename
+
+        // Test deserialization roundtrip
+        let parsed: BmadConformanceResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.file_path, "test.md");
+        assert_eq!(parsed.missing_sections.len(), 1);
+        assert!(parsed.missing_sections[0].is_required);
+    }
+
+    #[test]
+    fn test_extra_sections_detection() {
+        // Test that extra sections (in doc but not in template) are detected (STORY-7.5)
+        let yaml = r#"
+template:
+  id: test
+  name: Test
+  version: 1.0
+  output:
+    format: markdown
+    filename: test.md
+
+sections:
+  - id: status
+    title: Status
+    type: paragraphs
+  - id: description
+    title: Description
+    type: paragraphs
+"#;
+        let template = BmadTemplate::from_yaml(yaml).unwrap();
+        let parser = MarkdownParser::new();
+        // Document has an extra "Notes" section not in template
+        let doc = parser
+            .parse("# My Doc\n## Status\nDraft\n## Description\nSome text\n## Notes\nExtra content")
+            .unwrap();
+
+        let manager = TemplateManager::default();
+        let result = manager.check_bmad_conformance(&doc, &template, Path::new("test.yaml"));
+
+        // Should detect "Notes" as an extra section
+        assert!(result.extra_sections.contains(&"Notes".to_string()));
+        // Status and Description should NOT be in extra_sections
+        assert!(!result.extra_sections.iter().any(|s| s.to_lowercase() == "status"));
+        assert!(!result.extra_sections.iter().any(|s| s.to_lowercase() == "description"));
+    }
+
+    #[test]
+    fn test_suggestion_kind_serialization() {
+        // Test SuggestionKind serde rename to snake_case (STORY-7.5)
+        let suggestion = ConformanceSuggestion {
+            kind: SuggestionKind::AddSection,
+            description: "Test".to_string(),
+            auto_fixable: true,
+        };
+        let json = serde_json::to_string(&suggestion).unwrap();
+        assert!(json.contains("\"add_section\""));
+
+        let suggestion2 = ConformanceSuggestion {
+            kind: SuggestionKind::FixChoice,
+            description: "Test".to_string(),
+            auto_fixable: false,
+        };
+        let json2 = serde_json::to_string(&suggestion2).unwrap();
+        assert!(json2.contains("\"fix_choice\""));
     }
 }

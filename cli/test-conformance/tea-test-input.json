@@ -1,0 +1,46 @@
+{
+  "document": {
+    "title": "STORY-TEST: Login Feature",
+    "sections": [
+      { "section_type": "heading", "level": 2, "content": "Status" },
+      { "section_type": "paragraph", "content": "WIP" },
+      { "section_type": "heading", "level": 2, "content": "Story" },
+      { "section_type": "paragraph", "content": "As a user, I want to login with my credentials so that I can access my dashboard." },
+      { "section_type": "heading", "level": 2, "content": "Tasks" },
+      { "section_type": "paragraph", "content": "- Create login form component\n- Add form validation\n- Implement API integration\n- Add error handling" },
+      { "section_type": "heading", "level": 2, "content": "Dev Notes" },
+      { "section_type": "paragraph", "content": "Remember to use the existing auth service. Check with backend team about token refresh." }
+    ]
+  },
+  "template": {
+    "sections": [
+      { "section_type": "heading", "level": 2, "content": "Status" },
+      { "section_type": "heading", "level": 2, "content": "Story" },
+      { "section_type": "heading", "level": 2, "content": "Acceptance Criteria" },
+      { "section_type": "heading", "level": 2, "content": "Tasks / Subtasks" },
+      { "section_type": "heading", "level": 2, "content": "QA Results" }
+    ]
+  },
+  "conformance": {
+    "file_path": "docs/stories/STORY-TEST-login.md",
+    "template_id": "story-template-v2",
+    "template_path": "templates/story.yaml",
+    "is_conformant": false,
+    "missing_sections": [
+      { "section_id": "acceptance-criteria", "section_title": "Acceptance Criteria", "is_required": true },
+      { "section_id": "qa-results", "section_title": "QA Results", "is_required": false }
+    ],
+    "type_violations": [
+      { "section_id": "tasks", "section_title": "Tasks / Subtasks", "expected_type": "checklist", "actual_content": "- Create login form...", "suggestion": "Convert to checklist format with - [ ] items" }
+    ],
+    "choice_violations": [
+      { "section_id": "status", "section_title": "Status", "expected_choices": ["Draft", "Approved", "InProgress", "Review", "Done"], "actual_value": "WIP" }
+    ],
+    "extra_sections": ["Dev Notes"],
+    "suggestions": [
+      { "kind": "add_section", "description": "Add required section: Acceptance Criteria", "auto_fixable": true },
+      { "kind": "fix_type", "description": "Convert Tasks to checklist format", "auto_fixable": true },
+      { "kind": "fix_choice", "description": "Map 'WIP' to valid status value", "auto_fixable": false }
+    ]
+  }
+}

@@ -327,6 +327,9 @@ fn main() {
                             GraphDocsCommand::Check(args) => {
                                 cmd::graphdocs::handle_check(&fs, args).await
                             }
+                            GraphDocsCommand::ConformanceReport(args) => {
+                                cmd::graphdocs::handle_conformance_report(args).await
+                            }
                             GraphDocsCommand::Conform(_) => unreachable!(),
                         }
                     }

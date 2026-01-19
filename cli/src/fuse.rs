@@ -1423,8 +1423,25 @@ impl Filesystem for AgentFSFuse {
                 reply.error(libc::EACCES);
                 return;
             }
+
+            // Use handler registry for path-based writes (allows ConformanceWriteHandler to intercept)
+            let result = self
+                .runtime
+                .block_on(self.handler_registry.handle_write(&path, offset as u64, data));
+
+            match result {
+                Ok(written) => {
+                    reply.written(written as u32);
+                    return;
+                }
+                Err(e) => {
+                    reply.error(error_to_errno(&e));
+                    return;
+                }
+            }
         }
 
+        // Fall back to file handle based write if path not available
         let file = {
             let open_files = self.open_files.lock();
             let Some(open_file) = open_files.get(&fh) else {

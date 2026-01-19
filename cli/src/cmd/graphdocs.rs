@@ -86,6 +86,9 @@ pub enum GraphDocsCommand {
     /// Check document conformance against a template (no LLM required)
     Check(CheckArgs),
 
+    /// Generate detailed conformance report for a file (STORY-7.5)
+    ConformanceReport(ConformanceReportArgs),
+
     /// Edit a document in a text editor (YAML/TOML format)
     Edit(EditArgs),
 }
@@ -374,6 +377,21 @@ pub struct CheckArgs {
     /// Output format: table, json
     #[clap(long, value_enum, default_value_t = OutputFormat::Table)]
     pub format: OutputFormat,
+}
+
+/// Arguments for conformance-report command (STORY-7.5)
+#[derive(Args, Debug)]
+pub struct ConformanceReportArgs {
+    /// File to check conformance for
+    pub file: PathBuf,
+
+    /// Template to check against (auto-detected from parent directory if not specified)
+    #[clap(long, short)]
+    pub template: Option<String>,
+
+    /// Output as JSON (for CI/automation)
+    #[clap(long)]
+    pub json: bool,
 }
 
 /// Output format for edit command
@@ -1482,6 +1500,175 @@ pub async fn handle_check(_fs: &DuckAgentFS, args: CheckArgs) -> Result<()> {
     println!("Use `agentfs graphdocs conform` for LLM-based conformance checking.");
 
     Ok(())
+}
+
+/// Handle the graphdocs conformance-report command (STORY-7.5)
+///
+/// Generates a detailed conformance report for a single file, showing:
+/// - Missing sections (with required/optional flags)
+/// - Type violations (expected vs actual format)
+/// - Choice violations (invalid enum values)
+/// - Extra sections (not in template)
+/// - Suggestions (with auto-fixable flags)
+pub async fn handle_conformance_report(args: ConformanceReportArgs) -> Result<()> {
+    use agentfs_sdk::graphdocs::agent_transformer::EnhancedConformanceResult;
+    use agentfs_sdk::graphdocs::conformance::TemplateManager;
+    use agentfs_sdk::graphdocs::parser::MarkdownParser;
+    use agentfs_sdk::graphdocs::template_schema::BmadTemplate;
+
+    // Check file exists
+    if !args.file.exists() {
+        anyhow::bail!("File not found: {:?}", args.file);
+    }
+
+    // Find template - either from args or auto-detect from parent directory
+    let template_path = if let Some(ref template) = args.template {
+        PathBuf::from(template)
+    } else {
+        // Auto-detect template from parent directory
+        let parent = args.file.parent().unwrap_or(std::path::Path::new("."));
+        TemplateManager::detect_template(parent)
+            .ok_or_else(|| anyhow::anyhow!("No template found in {:?}. Use --template to specify.", parent))?
+    };
+
+    if !template_path.exists() {
+        anyhow::bail!("Template not found: {:?}", template_path);
+    }
+
+    // Read and parse document
+    let content = std::fs::read_to_string(&args.file)?;
+    let parser = MarkdownParser::new();
+    let doc = parser.parse(&content).context("Failed to parse document")?;
+
+    // Load template and check conformance
+    let mut manager = TemplateManager::new();
+    let is_yaml = TemplateManager::is_yaml_template(&template_path);
+
+    if is_yaml {
+        let tmpl_content = std::fs::read_to_string(&template_path)?;
+        let bmad = BmadTemplate::from_yaml(&tmpl_content).context("Failed to parse YAML template")?;
+        manager.load_bmad_template_sync(&template_path)?;
+
+        let mut result = manager.check_bmad_conformance(&doc, &bmad, &template_path);
+        result.file_path = args.file.display().to_string();
+
+        // Convert to enhanced result for output
+        let enhanced: EnhancedConformanceResult = result.into();
+
+        if args.json {
+            // JSON output for CI/automation
+            println!("{}", serde_json::to_string_pretty(&enhanced)?);
+        } else {
+            // Human-readable output
+            print_conformance_report(&enhanced);
+        }
+    } else {
+        // Markdown template - less detailed output
+        let tmpl_content = std::fs::read_to_string(&template_path)?;
+        let template_doc = parser.parse(&tmpl_content).context("Failed to parse template")?;
+        manager.load_markdown_template_sync(&template_path)?;
+
+        let mut result = manager.check_markdown_conformance(&doc, &template_doc, &template_path);
+        result.file_path = args.file.display().to_string();
+
+        if args.json {
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        } else {
+            println!("Conformance Report for: {}", result.file_path);
+            println!("Template: {}", result.template_path);
+            println!("Conformant: {}", if result.is_conformant { "Yes" } else { "No" });
+            println!();
+
+            if !result.missing_sections.is_empty() {
+                println!("Missing Sections:");
+                for section in &result.missing_sections {
+                    println!("  - {}", section);
+                }
+                println!();
+            }
+
+            if !result.extra_sections.is_empty() {
+                println!("Extra Sections:");
+                for section in &result.extra_sections {
+                    println!("  - {}", section);
+                }
+                println!();
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Print human-readable conformance report
+fn print_conformance_report(report: &agentfs_sdk::graphdocs::agent_transformer::EnhancedConformanceResult) {
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("CONFORMANCE REPORT");
+    println!("═══════════════════════════════════════════════════════════════");
+    println!();
+    println!("File:      {}", report.file_path);
+    println!("Template:  {} ({})", report.template_id, report.template_path);
+    println!("Status:    {}", if report.is_conformant { "✓ CONFORMANT" } else { "✗ NON-CONFORMANT" });
+    println!();
+
+    if !report.missing_sections.is_empty() {
+        println!("───────────────────────────────────────────────────────────────");
+        println!("MISSING SECTIONS ({} total)", report.missing_sections.len());
+        println!("───────────────────────────────────────────────────────────────");
+        for section in &report.missing_sections {
+            let required_marker = if section.is_required { "[REQUIRED]" } else { "[optional]" };
+            println!("  {} {} (id: {})", required_marker, section.section_title, section.section_id);
+        }
+        println!();
+    }
+
+    if !report.type_violations.is_empty() {
+        println!("───────────────────────────────────────────────────────────────");
+        println!("TYPE VIOLATIONS ({} total)", report.type_violations.len());
+        println!("───────────────────────────────────────────────────────────────");
+        for violation in &report.type_violations {
+            println!("  Section: {} (id: {})", violation.section_title, violation.section_id);
+            println!("    Expected: {}", violation.expected_type);
+            println!("    Actual:   {}...", &violation.actual_content.chars().take(50).collect::<String>());
+            println!("    Fix:      {}", violation.suggestion);
+            println!();
+        }
+    }
+
+    if !report.choice_violations.is_empty() {
+        println!("───────────────────────────────────────────────────────────────");
+        println!("CHOICE VIOLATIONS ({} total)", report.choice_violations.len());
+        println!("───────────────────────────────────────────────────────────────");
+        for violation in &report.choice_violations {
+            println!("  Section: {} (id: {})", violation.section_title, violation.section_id);
+            println!("    Current:  '{}'", violation.actual_value);
+            println!("    Valid:    {:?}", violation.expected_choices);
+            println!();
+        }
+    }
+
+    if !report.extra_sections.is_empty() {
+        println!("───────────────────────────────────────────────────────────────");
+        println!("EXTRA SECTIONS ({} total)", report.extra_sections.len());
+        println!("───────────────────────────────────────────────────────────────");
+        for section in &report.extra_sections {
+            println!("  - {}", section);
+        }
+        println!();
+    }
+
+    if !report.suggestions.is_empty() {
+        println!("───────────────────────────────────────────────────────────────");
+        println!("SUGGESTIONS ({} total)", report.suggestions.len());
+        println!("───────────────────────────────────────────────────────────────");
+        for suggestion in &report.suggestions {
+            let fixable = if suggestion.auto_fixable { "[auto-fixable]" } else { "" };
+            println!("  {} {} {}", suggestion.kind, suggestion.description, fixable);
+        }
+        println!();
+    }
+
+    println!("═══════════════════════════════════════════════════════════════");
 }
 
 /// Load a document for editing

@@ -1,5 +1,9 @@
 # agents/document-conformance-agent.yaml
 # RUN: TEA_IMAGE=ghcr.io/fabceolin/tea:gemma3n-e4b tea-docker run document-conformance-agent.yaml --input '{"raw_status": "[**Done**]"}'
+#
+# This agent normalizes status text for document conformance.
+# For full conformance checking, see document-transformer-agent.yaml which uses
+# the enhanced conformance schema (STORY-7.5) with detailed violation info.
 
 name: document-conformance-fixer
 description: Normalizes status text using local LLM classification
