@@ -1,0 +1,7 @@
+# Cargo build configuration for AgentFS CLI
+# Limits parallel compilation jobs to prevent system overload
+
+[build]
+# Limit parallel jobs to 6 to avoid overwhelming the system
+# Adjust this value based on your system's RAM and CPU cores
+jobs = 6
