@@ -112,20 +112,27 @@ nodes:
       - to: passthrough
 
   # Step 2: Build SYSTEM INSTRUCTION
+  # STORY-8.1 FIX: Added explicit content preservation mandate
   - name: build_system_instruction
     language: lua
     run: |
       local instruction = "### SYSTEM INSTRUCTION ###\n" ..
-        "You are a strict Document Transformation Engine. Your goal is to refactor the INPUT_TEXT into the TARGET_STRUCTURE following the BUSINESS_RULES exactly.\n\n" ..
-        "CRITICAL CONSTRAINTS:\n" ..
+        "You are a strict Document Transformation Engine. Your goal is to reorganize INPUT_TEXT into TARGET_STRUCTURE while PRESERVING 100% OF ALL CONTENT.\n\n" ..
+        "ABSOLUTE REQUIREMENTS:\n" ..
+        "- PRESERVE every single word, sentence, paragraph, code block, and table from the input\n" ..
+        "- NEVER delete, summarize, truncate, or omit ANY content\n" ..
+        "- Sections not in the template go under '## Additional Notes' WITH ALL THEIR CONTENT\n" ..
+        "- The output MUST be at least as long as the input (reorganized, not shortened)\n\n" ..
+        "OUTPUT FORMAT:\n" ..
         "- Output ONLY the final Markdown document\n" ..
-        "- No explanations, no comments, no code block markers (```)\n" ..
+        "- No explanations, no comments, no code block markers around the whole document\n" ..
         "- No conversational text before or after the document\n" ..
         "- Start directly with the document title (# Title)"
 
       return { system_instruction = instruction }
 
   # Step 3: Build BUSINESS_RULES dynamically from conformance data
+  # STORY-8.1 FIX: Strengthened content preservation rules to prevent loss
   - name: build_business_rules
     language: lua
     run: |
@@ -134,8 +141,18 @@ nodes:
       local rules = {}
       local rule_num = 1
 
-      -- Rule: Fidelity (always present)
-      table.insert(rules, rule_num .. ". **Fidelity**: Preserve ALL original textual content exactly. Do not summarize, paraphrase, or omit any text.")
+      -- Rule: ABSOLUTE Fidelity (highest priority - STORY-8.1 fix)
+      table.insert(rules, rule_num .. ". **ABSOLUTE FIDELITY** (CRITICAL): You MUST preserve 100% of ALL original content. This includes:")
+      table.insert(rules, "   - Every single word, sentence, and paragraph")
+      table.insert(rules, "   - All code blocks (preserve EXACTLY, including formatting)")
+      table.insert(rules, "   - All lists (numbered, bulleted, checklists)")
+      table.insert(rules, "   - All tables")
+      table.insert(rules, "   - All section content, even if the section is not in the template")
+      table.insert(rules, "   - NEVER summarize, paraphrase, truncate, or omit ANY text")
+      rule_num = rule_num + 1
+
+      -- Rule: Zero Content Loss (STORY-8.1 fix)
+      table.insert(rules, rule_num .. ". **ZERO CONTENT LOSS**: If the output document is shorter than the input, YOU HAVE FAILED. The output must contain ALL original content.")
       rule_num = rule_num + 1
 
       -- Rule: Status Mapping (if choice violations exist)
@@ -183,11 +200,14 @@ nodes:
         rule_num = rule_num + 1
       end
 
-      -- Rule: Extra Sections
+      -- Rule: Extra Sections (STORY-8.1 fix: explicit preservation)
       local extra = gaps.extra_sections or {}
       if #extra > 0 then
         local sections_str = table.concat(extra, ", ")
-        table.insert(rules, rule_num .. ". **Extra Sections**: The following sections are not in the template. Move them to the end under '## Additional Notes': " .. sections_str)
+        table.insert(rules, rule_num .. ". **PRESERVE Extra Sections**: The following sections are NOT in the template but MUST BE KEPT with ALL their content: " .. sections_str)
+        table.insert(rules, "   - Move these sections to the end under '## Additional Notes' heading")
+        table.insert(rules, "   - Preserve EVERY word, code block, and detail from these sections")
+        table.insert(rules, "   - NEVER delete or omit content from non-template sections")
         rule_num = rule_num + 1
       end
 
@@ -289,13 +309,14 @@ nodes:
       return { final_prompt = table.concat(parts, "\n") }
 
   # Step 7: Send to LLM
+  # STORY-8.1 FIX: Increased max_tokens to prevent truncation of large documents
   - name: transform_with_llm
     uses: llm.chat
     with:
       messages:
         - role: user
           content: "{{ state.final_prompt }}"
-      max_tokens: 4096
+      max_tokens: 16384
       temperature: 0.1
     output: transform_result
 

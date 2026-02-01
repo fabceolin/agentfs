@@ -1465,12 +1465,40 @@ impl Filesystem for AgentFSFuse {
 
     /// Flushes data to the backend storage.
     ///
-    /// Since writes go directly to the database, this is a no-op.
-    fn flush(&mut self, _req: &Request, _ino: u64, fh: u64, _lock_owner: u64, reply: ReplyEmpty) {
-        tracing::debug!("FUSE::flush: fh={}", fh);
-        // For handler-managed virtual files, the file handle won't be in open_files
-        // because we don't actually open a file. Always succeed for flush since
-        // there's nothing to flush for virtual files.
+    /// # BUG-003 Fix: Primary trigger for conformance processing
+    ///
+    /// This is called when an application closes a file descriptor with pending writes.
+    /// We call the handler registry to allow ConformanceWriteHandler to trigger
+    /// background conformance processing for completed files.
+    fn flush(&mut self, _req: &Request, ino: u64, fh: u64, _lock_owner: u64, reply: ReplyEmpty) {
+        tracing::debug!("FUSE::flush: ino={}, fh={}", ino, fh);
+
+        // Get path and mtime for handler registry (BUG-003)
+        let real_ino = self.get_real_inode(ino);
+        if let Some(path) = self.get_path(real_ino).or_else(|| self.get_path(ino)) {
+            // Get mtime for dedup tracking
+            let mtime = {
+                let fs = self.fs.clone();
+                let path_clone = path.clone();
+                self.runtime
+                    .block_on(async move { fs.stat(&path_clone).await })
+                    .ok()
+                    .flatten()
+                    .map(|s| s.mtime)
+                    .unwrap_or(0)
+            };
+
+            // Call handler registry (BUG-003: triggers conformance)
+            let result = self
+                .runtime
+                .block_on(self.handler_registry.handle_flush(&path, real_ino, mtime));
+
+            if let Err(e) = result {
+                tracing::warn!("Handler flush failed for {}: {}", path, e);
+                // Don't fail the flush - conformance failure shouldn't block the user
+            }
+        }
+
         reply.ok();
     }
 
@@ -1501,19 +1529,49 @@ impl Filesystem for AgentFSFuse {
 
     /// Releases (closes) an open file handle.
     ///
-    /// Removes the file handle from the open files table.
-    /// Since writes go directly to the database, no flushing is needed.
+    /// # BUG-003 Fix: Fallback trigger for conformance processing
+    ///
+    /// Some applications (vim, rsync) don't call flush() before closing.
+    /// This is a fallback to ensure conformance still triggers. The handler
+    /// uses dedup tracking to prevent double-processing if flush() already ran.
     fn release(
         &mut self,
         _req: &Request,
-        _ino: u64,
+        ino: u64,
         fh: u64,
         _flags: i32,
         _lock_owner: Option<u64>,
         _flush: bool,
         reply: ReplyEmpty,
     ) {
-        tracing::debug!("FUSE::release: fh={}", fh);
+        tracing::debug!("FUSE::release: ino={}, fh={}", ino, fh);
+
+        // Get path and mtime for handler registry (BUG-003)
+        let real_ino = self.get_real_inode(ino);
+        if let Some(path) = self.get_path(real_ino).or_else(|| self.get_path(ino)) {
+            // Get mtime for dedup tracking
+            let mtime = {
+                let fs = self.fs.clone();
+                let path_clone = path.clone();
+                self.runtime
+                    .block_on(async move { fs.stat(&path_clone).await })
+                    .ok()
+                    .flatten()
+                    .map(|s| s.mtime)
+                    .unwrap_or(0)
+            };
+
+            // Call handler registry (BUG-003: fallback for apps that skip flush)
+            let result = self
+                .runtime
+                .block_on(self.handler_registry.handle_release(&path, real_ino, mtime));
+
+            if let Err(e) = result {
+                tracing::warn!("Handler release failed for {}: {}", path, e);
+                // Don't fail the release - conformance failure shouldn't block the user
+            }
+        }
+
         self.open_files.lock().remove(&fh);
         reply.ok();
     }

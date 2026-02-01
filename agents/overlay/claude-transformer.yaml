@@ -1,5 +1,8 @@
 # Overlay for document-transformer-agent to use Claude shell provider
 # Usage: tea-python run agents/document-transformer-agent.yaml -f agents/overlay/claude-transformer.yaml --input '...'
+#
+# STORY-8.1 FIX: Increased max_tokens to handle large documents (up to 50KB)
+# Previous: 4096 tokens (~15KB) caused truncation and content loss
 
 settings:
   llm:
@@ -14,7 +17,7 @@ nodes:
       shell_provider: claude
       messages:
         - role: user
-          content: "{{ state.transform_prompt }}"
-      max_tokens: 2048
-      temperature: 0.2
+          content: "{{ state.final_prompt }}"
+      max_tokens: 16384
+      temperature: 0.1
     output: transform_result
