@@ -3,6 +3,9 @@
 #
 # STORY-8.1 FIX: Increased max_tokens to handle large documents (up to 50KB)
 # Previous: 4096 tokens (~15KB) caused truncation and content loss
+#
+# STORY-8.1 FIX: Increased timeout to 15 minutes for large documents (>70KB)
+# Previous: 300s default caused timeout for files >70KB
 
 settings:
   llm:
@@ -20,4 +23,5 @@ nodes:
           content: "{{ state.final_prompt }}"
       max_tokens: 16384
       temperature: 0.1
+      timeout: 900  # 15 minutes for large documents
     output: transform_result
